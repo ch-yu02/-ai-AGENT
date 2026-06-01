@@ -1,6 +1,6 @@
 from fastapi import WebSocket
 
-from .schemas import WebSocketMessage
+from backend.app.models import WebSocketMessage
 
 
 class ConnectionManager:

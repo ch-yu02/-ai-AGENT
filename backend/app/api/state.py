@@ -1,6 +1,6 @@
 from collections import defaultdict
 
-from .schemas import LectureSession, RealtimeEvent
+from backend.app.models import LectureSession, RealtimeEvent
 
 
 class AppState:

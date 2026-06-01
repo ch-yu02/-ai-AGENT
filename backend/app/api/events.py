@@ -1,7 +1,8 @@
 from fastapi import APIRouter, HTTPException, status
 
+from backend.app.models import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
+
 from .realtime import connection_manager
-from .schemas import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
 from .state import app_state
 
 

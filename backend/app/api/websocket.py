@@ -1,7 +1,8 @@
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from backend.app.models import WebSocketMessage
+
 from .realtime import connection_manager
-from .schemas import WebSocketMessage
 
 
 router = APIRouter(tags=["websocket"])

@@ -1,13 +1,14 @@
 from fastapi import APIRouter, HTTPException, status
 
-from .realtime import connection_manager
-from .schemas import (
+from backend.app.models import (
     LectureSession,
     StartSessionRequest,
     WebSocketMessage,
     new_session_id,
     utc_now_iso,
 )
+
+from .realtime import connection_manager
 from .state import app_state
 
 
