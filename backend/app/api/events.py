@@ -1,5 +1,10 @@
 from fastapi import APIRouter, HTTPException, status
 
+from backend.app.core import (
+    SessionConflictError,
+    SessionNotFoundError,
+    session_manager,
+)
 from backend.app.models import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
 
 from .realtime import connection_manager
@@ -19,10 +24,11 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     - knowledge.extraction -> KnowledgeGraphManager graph patch
     - every derived update -> WebSocket push using frontend-specific types
     """
-    session = app_state.sessions.get(event.session_id)
-    if session is None:
+    try:
+        session_manager.require_recording(event.session_id)
+    except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
-    if session.status != "recording":
+    except SessionConflictError:
         raise HTTPException(status_code=409, detail="Session is not recording")
 
     # For the MVP route layer, keep the raw event. The later manager layer should
