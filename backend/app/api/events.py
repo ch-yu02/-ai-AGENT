@@ -14,22 +14,20 @@
       ├── 1. SessionManager.require_recording()   ← 门控检查
       │     会话不存在 → 404；会话已结束 → 409
       │
-      ├── 2. app_state.events[sid].append(event)   ← 临时暂存（向后兼容，后续移除）
-      │
-      ├── 3. ContextManager.handle_event()          ← 解析并更新课堂上下文
+      ├── 2. ContextManager.handle_event()          ← 解析并更新课堂上下文
       │     ├─ transcript.segment  → 追加到 transcript / timeline
       │     ├─ image.capture      → 追加到 visuals / timeline
       │     └─ knowledge.extraction → 追加到 knowledge_extractions / timeline
       │     └─ 未知 event_type   → 400
       │
-      ├── 4. KnowledgeGraphManager.handle_event()   ← 更新知识图谱
+      ├── 3. KnowledgeGraphManager.handle_event()   ← 更新知识图谱
       │     └─ 仅处理 knowledge.extraction 事件
       │     └─ 非知识类事件返回 None（跳过图谱更新）
       │
-      ├── 5. WebSocketManager.broadcast()            ← 推送 WebSocket
+      ├── 4. WebSocketManager.broadcast()            ← 推送 WebSocket
       │     └─ 广播 event.received 消息（含上下文更新摘要 + 图谱增量补丁）
       │
-      └── 6. 返回 EventAcceptedResponse（HTTP 202）
+      └── 5. 返回 EventAcceptedResponse（HTTP 202）
 """
 
 from fastapi import APIRouter, HTTPException, status
@@ -47,8 +45,6 @@ from backend.app.core import (
     websocket_manager,
 )
 from backend.app.models import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
-
-from .state import app_state
 
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -99,14 +95,7 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     except SessionConflictError:
         raise HTTPException(status_code=409, detail="Session is not recording")
 
-    # ── 步骤 2：临时暂存（向后兼容） ─────────────────────────────
-    # app_state 是 MVP 阶段的临时事件缓冲区。后续 Manager 层（ContextManager、
-    # KnowledgeGraphManager）已就绪，但这行保留以保证旧测试和临时调试路径
-    # 仍然可用。等 LocalStorage 就绪后会移除。
-    app_state.events[event.session_id].append(event)
-    event_count = len(app_state.events[event.session_id])
-
-    # ── 步骤 3：更新课堂上下文 ────────────────────────────────────
+    # ── 步骤 2：更新课堂上下文 ────────────────────────────────────
     # ContextManager 根据 event_type 将 payload 解析为对应的结构化模型：
     #   - "transcript.segment"   → TranscriptSegment → 追加到 transcript + timeline
     #   - "image.capture"        → ImageCapture      → 追加到 visuals + timeline
@@ -119,7 +108,15 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     except ContextEventError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # ── 步骤 4：更新知识图谱 ──────────────────────────────────────
+    # ContextManager 处理成功后，三类计数相加就是该课堂已接受的事件数。
+    # 这样无需额外的 api/state.py 临时缓冲，也避免原始事件无限增长。
+    event_count = (
+        context_update.transcript_count
+        + context_update.visual_count
+        + context_update.knowledge_extraction_count
+    )
+
+    # ── 步骤 3：更新知识图谱 ──────────────────────────────────────
     # KnowledgeGraphManager 只处理 "knowledge.extraction" 事件。
     # 字幕和图片事件会返回 None，表示没有图谱变更需要推送。
     # 返回值 GraphPatch 包含本次增量操作（add_node / update_node / add_edge）
@@ -131,7 +128,7 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     except KnowledgeGraphEventError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    # ── 步骤 5：WebSocket 广播 ─────────────────────────────────────
+    # ── 步骤 4：WebSocket 广播 ─────────────────────────────────────
     # 将处理结果推送给该 session 的所有已连接前端。消息包含：
     #   - event_type / payload：原始事件信息（供前端判断事件种类）
     #   - event_count：该 session 累计事件数（可用于检测丢包）
@@ -152,7 +149,7 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
         ),
     )
 
-    # ── 步骤 6：返回确认 ──────────────────────────────────────────
+    # ── 步骤 5：返回确认 ──────────────────────────────────────────
     # 使用 HTTP 202 Accepted 表示事件已接收并开始处理，而非同步完成。
     # 前端收到此响应即可释放事件发送缓冲区，不需要等待后续广播到达。
     return EventAcceptedResponse(
