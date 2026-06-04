@@ -1,7 +1,7 @@
 """课堂会话 REST API —— 会话生命周期的 HTTP 入口。
 
 本模块提供课堂会话的完整生命周期管理：创建、查询、结束。
-每个写操作（创建/结束）都会通过 ``ConnectionManager`` 向 WebSocket
+每个写操作（创建/结束）都会通过 ``WebSocketManager`` 向 WebSocket
 订阅者广播状态变更，保证前端实时感知会话状态。
 
 端点一览
@@ -32,14 +32,16 @@
 from fastapi import APIRouter, HTTPException, status
 
 from backend.app.core import (
+    ContextNotFoundError,
+    KnowledgeGraphNotFoundError,
     SessionNotFoundError,
     context_manager,
     knowledge_graph_manager,
     session_manager,
+    websocket_manager,
 )
 from backend.app.models import LectureSession, StartSessionRequest, WebSocketMessage
-
-from .realtime import connection_manager
+from backend.app.storage import local_storage
 
 
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -70,13 +72,12 @@ async def start_session(request: StartSessionRequest) -> LectureSession:
     --------
     1. 调用 ``session_manager.create_session()`` 在内存中创建会话，
        自动生成唯一 session_id，状态固定为 ``"recording"``
-    2. 通过 ``connection_manager.broadcast()`` 向该 session 的所有
+    2. 通过 ``websocket_manager.broadcast()`` 向该 session 的所有
        WebSocket 订阅者推送 ``session.started`` 消息
     3. 返回完整的 ``LectureSession`` 对象（HTTP 201）
 
     未来扩展
     --------
-    - 在 LocalStorage 中创建会话数据目录
     - 在 LocalStorage 中创建会话数据目录
     """
     session = session_manager.create_session(request)
@@ -85,7 +86,7 @@ async def start_session(request: StartSessionRequest) -> LectureSession:
 
     # 创建成功后立即广播，此时通常还没有 WebSocket 订阅者，
     # 但 broadcast 对空列表是安全的（直接跳过遍历）
-    await connection_manager.broadcast(
+    await websocket_manager.broadcast(
         session.session_id,
         WebSocketMessage(
             type="session.started",
@@ -139,9 +140,11 @@ async def end_session(session_id: str) -> LectureSession:
     --------
     1. 调用 ``session_manager.end_session()`` 将状态从 ``"recording"``
        转为 ``"ended"``，同时记录 ``end_time``
-    2. 通过 ``connection_manager.broadcast()`` 推送 ``session.ended``，
+    2. 从 ContextManager / KnowledgeGraphManager 读取课堂内存状态
+    3. 调用 LocalStorage 保存 metadata / transcript / timeline / graph
+    4. 通过 ``websocket_manager.broadcast()`` 推送 ``session.ended``，
        前端收到后可以停止事件上报、展示课堂总结等
-    3. 返回更新后的 ``LectureSession`` 对象
+    5. 返回更新后的 ``LectureSession`` 对象
 
     未来扩展
     --------
@@ -152,16 +155,41 @@ async def end_session(session_id: str) -> LectureSession:
     - ``knowledge_graph.json`` —— 知识图谱节点与边
     """
     try:
+        context = context_manager.get_context(session_id)
+    except ContextNotFoundError:
+        raise HTTPException(status_code=404, detail="Context not found")
+
+    try:
+        knowledge_graph = knowledge_graph_manager.get_graph(session_id)
+    except KnowledgeGraphNotFoundError:
+        raise HTTPException(status_code=404, detail="Knowledge graph not found")
+
+    try:
         ended_session = session_manager.end_session(session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
 
-    await connection_manager.broadcast(
+    storage_result = local_storage.save_session(
+        session=ended_session,
+        context=context,
+        knowledge_graph=knowledge_graph,
+    )
+
+    await websocket_manager.broadcast(
         session_id,
         WebSocketMessage(
             type="session.ended",
             session_id=session_id,
-            data={"session": ended_session.model_dump()},
+            data={
+                "session": ended_session.model_dump(),
+                "storage": {
+                    "session_dir": str(storage_result.session_dir),
+                    "files": {
+                        name: str(path)
+                        for name, path in storage_result.files.items()
+                    },
+                },
+            },
         ),
     )
     return ended_session

@@ -18,6 +18,12 @@ from .session_manager import (
     SessionNotFoundError,
     session_manager,
 )
+from .websocket_manager import (
+    BroadcastResult,
+    WebSocketManager,
+    connection_manager,
+    websocket_manager,
+)
 
 __all__ = [
     "ContextEventError",
@@ -29,7 +35,11 @@ __all__ = [
     "SessionConflictError",
     "SessionManager",
     "SessionNotFoundError",
+    "BroadcastResult",
+    "WebSocketManager",
     "context_manager",
+    "connection_manager",
     "knowledge_graph_manager",
     "session_manager",
+    "websocket_manager",
 ]

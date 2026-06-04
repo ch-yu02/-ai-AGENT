@@ -26,7 +26,7 @@
       │     └─ 仅处理 knowledge.extraction 事件
       │     └─ 非知识类事件返回 None（跳过图谱更新）
       │
-      ├── 5. ConnectionManager.broadcast()           ← 推送 WebSocket
+      ├── 5. WebSocketManager.broadcast()            ← 推送 WebSocket
       │     └─ 广播 event.received 消息（含上下文更新摘要 + 图谱增量补丁）
       │
       └── 6. 返回 EventAcceptedResponse（HTTP 202）
@@ -44,10 +44,10 @@ from backend.app.core import (
     context_manager,
     knowledge_graph_manager,
     session_manager,
+    websocket_manager,
 )
 from backend.app.models import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
 
-from .realtime import connection_manager
 from .state import app_state
 
 
@@ -137,7 +137,7 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     #   - event_count：该 session 累计事件数（可用于检测丢包）
     #   - context_update：ContextManager 处理后的上下文变更摘要
     #   - graph_patch：KnowledgeGraphManager 生成的图谱增量补丁
-    await connection_manager.broadcast(
+    await websocket_manager.broadcast(
         event.session_id,
         WebSocketMessage(
             type="event.received",
