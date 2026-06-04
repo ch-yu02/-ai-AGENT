@@ -31,7 +31,12 @@
 
 from fastapi import APIRouter, HTTPException, status
 
-from backend.app.core import SessionNotFoundError, session_manager
+from backend.app.core import (
+    SessionNotFoundError,
+    context_manager,
+    knowledge_graph_manager,
+    session_manager,
+)
 from backend.app.models import LectureSession, StartSessionRequest, WebSocketMessage
 
 from .realtime import connection_manager
@@ -71,10 +76,12 @@ async def start_session(request: StartSessionRequest) -> LectureSession:
 
     未来扩展
     --------
-    - 创建会话时同步初始化 ContextManager / KnowledgeGraphManager
+    - 在 LocalStorage 中创建会话数据目录
     - 在 LocalStorage 中创建会话数据目录
     """
     session = session_manager.create_session(request)
+    context_manager.start_session(session.session_id)
+    knowledge_graph_manager.start_session(session.session_id)
 
     # 创建成功后立即广播，此时通常还没有 WebSocket 订阅者，
     # 但 broadcast 对空列表是安全的（直接跳过遍历）

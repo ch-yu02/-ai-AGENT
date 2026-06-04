@@ -1,6 +1,7 @@
 """Shared Pydantic models used by API, core managers, and storage."""
 
 from .common import SourceRef, utc_now_iso
+from .context import ClassroomContext, ContextUpdate, TimelineItem
 from .events import (
     EventAcceptedResponse,
     EventType,
@@ -24,6 +25,8 @@ from .websocket import WebSocketMessage
 __all__ = [
     "EventAcceptedResponse",
     "EventType",
+    "ClassroomContext",
+    "ContextUpdate",
     "GraphPatch",
     "GraphPatchOperation",
     "ImageCapture",
@@ -38,6 +41,7 @@ __all__ = [
     "SessionStatus",
     "SourceRef",
     "StartSessionRequest",
+    "TimelineItem",
     "TranscriptSegment",
     "WebSocketMessage",
     "new_session_id",
