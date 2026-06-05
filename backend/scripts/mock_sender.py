@@ -14,6 +14,11 @@
 然后运行：
 
     .venv/bin/python backend/scripts/mock_sender.py
+
+如果要配合前端页面联调，先在前端点击“开始课堂”，复制页面上的
+session_id，然后运行：
+
+    .venv/bin/python backend/scripts/mock_sender.py --session-id lec_xxx --no-end
 """
 
 from __future__ import annotations
@@ -307,12 +312,25 @@ def end_session(base_url: str, session_id: str) -> dict[str, Any]:
     return post_json(base_url, f"/sessions/{session_id}/end", {})
 
 
-def run_mock_sender(base_url: str, delay: float, should_end: bool) -> str:
-    """执行完整的模拟课堂数据流，返回创建出的 session_id。"""
+def run_mock_sender(
+    base_url: str,
+    delay: float,
+    should_end: bool,
+    session_id: str | None = None,
+) -> str:
+    """执行完整的模拟课堂数据流，返回本次写入的 session_id。
 
-    session = start_session(base_url)
-    session_id = session["session_id"]
-    print(f"已创建模拟课堂：{session_id}")
+    默认行为保持原样：脚本自己创建一节课堂，然后往这节课堂发送 mock
+    事件。前端联调时可以传入 ``session_id``，脚本会跳过创建课堂，直接
+    往前端当前订阅的 session 写事件。
+    """
+
+    if session_id is None:
+        session = start_session(base_url)
+        session_id = session["session_id"]
+        print(f"已创建模拟课堂：{session_id}")
+    else:
+        print(f"使用已有课堂：{session_id}")
 
     events = build_mock_events(session_id)
     for index, event in enumerate(events, start=1):
@@ -352,6 +370,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         help="每条事件之间的等待秒数，设为 0 可快速发送。默认 1.0",
     )
     parser.add_argument(
+        "--session-id",
+        default=None,
+        help="使用已有课堂 session_id；适合前端先开始课堂并订阅 WebSocket 后联调。",
+    )
+    parser.add_argument(
         "--no-end",
         action="store_true",
         help="发送完事件后不结束课堂，方便继续调试 WebSocket 或手动追加事件。",
@@ -368,6 +391,7 @@ def main(argv: list[str] | None = None) -> int:
             base_url=args.base_url,
             delay=max(args.delay, 0.0),
             should_end=not args.no_end,
+            session_id=args.session_id,
         )
     except RuntimeError as exc:
         print(str(exc), file=sys.stderr)

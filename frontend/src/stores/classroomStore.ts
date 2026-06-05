@@ -164,7 +164,9 @@ function applyEventReceivedMessage(
 
   // 优先使用 ContextManager 标准化后的 timeline_item.data；如果缺失，则回退到
   // 原始 payload。这样前端能兼容 mock sender 和后端默认补齐字段。
-  const normalizedPayload = readObject(contextUpdate?.timeline_item.data) ?? payload;
+  const timelineData = readObject(contextUpdate?.timeline_item.data);
+  const normalizedPayload =
+    timelineData && Object.keys(timelineData).length > 0 ? timelineData : payload;
 
   if (eventType === "transcript.segment" && isTranscriptSegment(normalizedPayload)) {
     nextState = {

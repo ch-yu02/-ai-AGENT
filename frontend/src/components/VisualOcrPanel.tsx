@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 import { EmptyState } from "./EmptyState";
 import type { ImageCapture } from "../types/classroom";
 import { formatClassTime } from "../utils/time";
@@ -12,6 +14,20 @@ type VisualOcrPanelProps = {
 };
 
 export function VisualOcrPanel({ visuals }: VisualOcrPanelProps) {
+  // 视觉事件通常比字幕少，但每次出现都很重要；自动滚到底能让 mock sender
+  // 连续发送图片/OCR 时，页面始终显示最新处理结果。
+  const listRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const list = listRef.current;
+
+    if (!list) {
+      return;
+    }
+
+    list.scrollTop = list.scrollHeight;
+  }, [visuals.length]);
+
   return (
     <section className="panel visual-panel" aria-labelledby="visual-title">
       <div className="panel-header">
@@ -24,15 +40,37 @@ export function VisualOcrPanel({ visuals }: VisualOcrPanelProps) {
       {visuals.length === 0 ? (
         <EmptyState label="等待视觉内容" />
       ) : (
-        <div className="scroll-list">
+        <div className="scroll-list visual-list" ref={listRef}>
           {visuals.map((visual) => (
             <article className="visual-item" key={visual.image_id}>
               <div>
                 <strong>{visual.image_type || "课堂图片"}</strong>
                 <span>{formatClassTime(visual.capture_ts)}</span>
               </div>
-              {/* OCR 优先，其次 VLM caption，最后展示路径作为联调线索。 */}
-              <p>{visual.ocr_text || visual.caption || visual.image_path}</p>
+              <dl className="visual-meta">
+                <div>
+                  <dt>来源</dt>
+                  <dd>{visual.source || "-"}</dd>
+                </div>
+                <div>
+                  <dt>状态</dt>
+                  <dd>{visual.status}</dd>
+                </div>
+              </dl>
+              {visual.ocr_text ? (
+                <div className="visual-block">
+                  <span>OCR</span>
+                  <p>{visual.ocr_text}</p>
+                </div>
+              ) : null}
+              {visual.caption ? (
+                <div className="visual-block">
+                  <span>描述</span>
+                  <p>{visual.caption}</p>
+                </div>
+              ) : null}
+              {/* local:// 路径暂时不能直接加载，展示出来方便联调确认图片 ID。 */}
+              <code className="image-path">{visual.image_path}</code>
             </article>
           ))}
         </div>
