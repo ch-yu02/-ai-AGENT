@@ -89,7 +89,7 @@ export type KnowledgeGraphView = {
 // 单条图谱增量操作。
 // 前端 reducer 应按 operations 顺序执行，保证节点先于边创建。
 export type GraphPatchOperation = {
-  op: "add_node" | "update_node" | "add_edge";
+  op: "add_node" | "update_node" | "add_edge" | "remove_node" | "remove_edge";
   node?: KnowledgeNode | null;
   edge?: KnowledgeEdge | null;
   data?: Record<string, unknown>;
