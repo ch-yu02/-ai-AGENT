@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from .api import events, sessions, websocket
+from .api import agent, events, sessions, websocket
 
 
 APP_NAME = "Lecture-Link Agent Backend"
@@ -54,6 +54,7 @@ def create_app() -> FastAPI:
     app.include_router(sessions.router)
     app.include_router(events.router)
     app.include_router(websocket.router)
+    app.include_router(agent.router)
 
     return app
 

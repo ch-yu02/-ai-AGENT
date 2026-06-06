@@ -1,5 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
+import { AgentPanel } from "./components/AgentPanel";
 import { ClassroomControls } from "./components/ClassroomControls";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { KnowledgeGraphPanel } from "./components/KnowledgeGraphPanel";
@@ -365,6 +366,7 @@ function App() {
           <TimelinePanel timeline={state.timeline} />
           <VisualOcrPanel visuals={state.visuals} />
           <KnowledgeGraphPanel graph={state.graph} />
+          <AgentPanel session={state.session} />
         </section>
       </section>
     </main>

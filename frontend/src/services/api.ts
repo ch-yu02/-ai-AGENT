@@ -8,7 +8,8 @@ import type {
 // 后端 API 基地址。
 // 默认指向 AGENTS.md / API_SCHEMA.md 约定的本地 FastAPI 服务。
 // 如果以后前后端不在同一机器，可以通过 .env 设置 VITE_API_BASE_URL 覆盖。
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://127.0.0.1:8000";
 
 // POST /sessions/start 的请求体。
 // 字段名保持后端契约的 snake_case，避免在 service 层做不必要转换。
@@ -44,7 +45,7 @@ export class ApiError extends Error {
 // - 把非 2xx 响应转换成 ApiError。
 //
 // UI 组件不要直接 fetch 后端，避免错误处理和 URL 配置散落在页面里。
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
+export async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     ...init,
     headers: {
