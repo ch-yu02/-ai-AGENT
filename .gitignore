@@ -5,7 +5,9 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
-AGENTS.md
+.env
+.env.*
+*.log
 
 data/sessions/*
 !data/sessions/.gitkeep
