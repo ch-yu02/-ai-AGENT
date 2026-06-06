@@ -118,7 +118,8 @@ Content-Type: application/json
 
 ### GET /sessions/{session_id}
 
-读取内存中的课堂元信息。
+读取课堂元信息。优先读取内存中的课堂；如果后端重启导致内存丢失，会回退
+读取本地历史文件中的 `metadata.json`。
 
 响应状态码：`200 OK`
 
@@ -128,7 +129,61 @@ Content-Type: application/json
 
 | 状态码 | 场景 |
 | --- | --- |
-| `404` | session 不存在或后端重启后内存中已丢失 |
+| `404` | session 不存在，且本地历史文件中也没有对应元信息 |
+
+### GET /sessions
+
+读取已保存的历史课堂列表。仅返回已经结束并写入 `data/sessions/{session_id}`
+的课堂；正在录制但尚未保存的课堂不会出现在列表中。
+
+响应状态码：`200 OK`
+
+响应体：
+
+```json
+{
+  "sessions": [
+    {
+      "session": {
+        "session_id": "lec_20260605_010203_ab12cd34",
+        "title": "通信原理第8讲：傅里叶变换",
+        "course": "通信原理",
+        "teacher": "张老师",
+        "start_time": "2026-06-05T01:02:03.000000+00:00",
+        "end_time": "2026-06-05T02:30:00.000000+00:00",
+        "status": "ended",
+        "language": "zh-CN",
+        "created_by": "student",
+        "device_id": "dk2500_001"
+      },
+      "event_count": 12,
+      "storage_path": "data/sessions/lec_20260605_010203_ab12cd34"
+    }
+  ]
+}
+```
+
+### GET /sessions/{session_id}/history
+
+读取一节已保存课堂的完整历史内容，用于历史回放、课后技能和总结页面。
+
+响应状态码：`200 OK`
+
+响应字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `session` | `LectureSession` | 课堂元信息 |
+| `transcript_markdown` | string | `transcript.md` 的完整内容 |
+| `timeline` | `TimelineItem[]` | `timeline.json` 的时间线条目 |
+| `knowledge_graph` | `KnowledgeTree` | `knowledge_graph.json` 的图谱快照 |
+| `storage_path` | string | 本地历史课堂目录 |
+
+错误：
+
+| 状态码 | 场景 |
+| --- | --- |
+| `404` | 本地历史课堂不存在或缺少必要文件 |
 
 ### POST /sessions/{session_id}/end
 

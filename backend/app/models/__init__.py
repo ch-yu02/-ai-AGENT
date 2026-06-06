@@ -19,7 +19,15 @@ from .knowledge import (
     KnowledgeRelation,
     KnowledgeTree,
 )
-from .session import LectureSession, SessionStatus, StartSessionRequest, new_session_id
+from .session import (
+    LectureSession,
+    SessionHistoryDetail,
+    SessionHistoryListResponse,
+    SessionHistorySummary,
+    SessionStatus,
+    StartSessionRequest,
+    new_session_id,
+)
 from .websocket import WebSocketMessage
 
 __all__ = [
@@ -38,6 +46,9 @@ __all__ = [
     "KnowledgeTree",
     "LectureSession",
     "RealtimeEvent",
+    "SessionHistoryDetail",
+    "SessionHistoryListResponse",
+    "SessionHistorySummary",
     "SessionStatus",
     "SourceRef",
     "StartSessionRequest",

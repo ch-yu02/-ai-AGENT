@@ -135,6 +135,53 @@ class LocalStorageTest(unittest.TestCase):
         self.assertTrue(self.storage.session_exists(self.session_id))
         self.assertEqual(metadata["title"], "通信原理第8讲")
 
+    def test_list_sessions_returns_history_summaries_newest_first(self) -> None:
+        older_session = self._session().model_copy(
+            update={
+                "session_id": "lec_storage_000",
+                "start_time": "2026-06-03T09:00:00+08:00",
+            }
+        )
+        older_context = self._context().model_copy(update={"session_id": "lec_storage_000"})
+        older_graph = self._knowledge_graph().model_copy(
+            update={"session_id": "lec_storage_000"}
+        )
+
+        self.storage.save_session(
+            session=older_session,
+            context=older_context,
+            knowledge_graph=older_graph,
+        )
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        summaries = self.storage.list_sessions()
+
+        self.assertEqual([item.session.session_id for item in summaries], [
+            self.session_id,
+            "lec_storage_000",
+        ])
+        self.assertEqual(summaries[0].event_count, 1)
+        self.assertTrue(summaries[0].storage_path.endswith(self.session_id))
+
+    def test_read_session_returns_full_history_detail(self) -> None:
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        detail = self.storage.read_session(self.session_id)
+
+        self.assertEqual(detail.session.title, "通信原理第8讲")
+        self.assertIn("傅里叶变换可以把时域信号转换到频域。", detail.transcript_markdown)
+        self.assertEqual(detail.timeline[0].item_id, "seg_001")
+        self.assertEqual(detail.knowledge_graph.edges[0].relation, "maps_to")
+        self.assertTrue(detail.storage_path.endswith(self.session_id))
+
 
 if __name__ == "__main__":
     unittest.main()

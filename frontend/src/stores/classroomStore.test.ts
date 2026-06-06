@@ -470,6 +470,83 @@ describe("classroomReducer", () => {
     expect(withoutNode.graph.nodes.map((node) => node.node_id)).toEqual(["node_b"]);
     expect(withoutNode.graph.edges).toHaveLength(0);
   });
+
+  it("loads persisted history details into the dashboard state", () => {
+    const state = classroomReducer(initialDashboardState, {
+      type: "history.loaded",
+      detail: {
+        session: {
+          session_id: "lec_history",
+          title: "历史课堂",
+          course: "通信原理",
+          teacher: "王老师",
+          start_time: "2026-06-05T12:00:00+08:00",
+          end_time: "2026-06-05T13:00:00+08:00",
+          status: "ended",
+          language: "zh-CN",
+          created_by: "student",
+          device_id: null,
+        },
+        transcript_markdown: "# Transcript - lec_history",
+        timeline: [
+          {
+            item_id: "seg_history",
+            session_id: "lec_history",
+            type: "transcript",
+            ts: 1,
+            title: "历史字幕",
+            data: {
+              segment_id: "seg_history",
+              session_id: "lec_history",
+              start_ts: 1,
+              end_ts: 2,
+              text: "这是一条历史字幕。",
+            },
+          },
+          {
+            item_id: "img_history",
+            session_id: "lec_history",
+            type: "visual",
+            ts: 3,
+            title: "历史图片",
+            data: {
+              image_id: "img_history",
+              session_id: "lec_history",
+              capture_ts: 3,
+              image_path: "local://history/img.jpg",
+              status: "processed",
+              ocr_text: "历史 OCR",
+            },
+          },
+        ],
+        knowledge_graph: {
+          session_id: "lec_history",
+          version: 4,
+          root_nodes: ["node_history"],
+          nodes: [
+            {
+              node_id: "node_history",
+              label: "历史知识点",
+              type: "concept",
+              summary: null,
+              level: 0,
+              importance: null,
+            },
+          ],
+          edges: [],
+        },
+        storage_path: "data/sessions/lec_history",
+      },
+    });
+
+    expect(state.session?.session_id).toBe("lec_history");
+    expect(state.websocketStatus).toBe("disconnected");
+    expect(state.eventCount).toBe(2);
+    expect(state.transcript[0].text).toContain("历史字幕");
+    expect(state.visuals[0].ocr_text).toBe("历史 OCR");
+    expect(state.graph.version).toBe(4);
+    expect(state.graph.nodes[0].label).toBe("历史知识点");
+  });
 });
 
 function eventReceivedMessage(data: Record<string, unknown>): WebSocketMessage {

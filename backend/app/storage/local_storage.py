@@ -1,7 +1,8 @@
 """本地课堂数据存储模块。
 
-LocalStorage 负责把一次课堂结束时的内存状态保存到磁盘。MVP 阶段的
-保存目录遵循任务清单中的结构：
+LocalStorage 负责把一次课堂结束时的内存状态保存到磁盘，并在课后
+历史功能中把这些文件重新读回为 API 响应模型。MVP 阶段的保存目录遵循
+任务清单中的结构：
 
   data/sessions/{session_id}/metadata.json
   data/sessions/{session_id}/transcript.md
@@ -10,21 +11,39 @@ LocalStorage 负责把一次课堂结束时的内存状态保存到磁盘。MVP 
 
 职责边界
 --------
-- 负责：创建目录、序列化 Pydantic 模型、写入课堂产物文件。
-- 不负责：判断 session 是否可结束、处理实时事件、生成知识图谱。
+- 负责：创建目录、序列化/反序列化 Pydantic 模型、写入和读取课堂产物文件。
+- 不负责：判断 session 是否可结束、处理实时事件、生成知识图谱、映射 HTTP 状态码。
 
 为什么结束课堂时统一写？
 ----------------------
 MVP 阶段先保证“演示主链路”稳定：课堂中全部数据留在内存，结束时一次性
 落盘。这样逻辑简单、易测试。后续若担心断电丢数据，可以扩展为事件级
 增量写入或定时快照。
+
+历史读取约定
+----------
+历史 API 不尝试恢复一节课为可写的 recording session，而是把本地文件
+作为只读课堂档案返回：
+  - GET /sessions 读取 metadata.json 和 timeline.json，生成轻量列表。
+  - GET /sessions/{session_id}/history 读取四个完整产物，生成回放详情。
+  - GET /sessions/{session_id} 内存未命中时，只回退读取 metadata.json。
+
+这种设计让课后浏览和实时课堂写入解耦：后端重启后仍能看历史，但不会误把
+旧 session 当作仍可接收事件的课堂。
 """
 
 import json
 from dataclasses import dataclass
 from pathlib import Path
 
-from backend.app.models import ClassroomContext, KnowledgeTree, LectureSession
+from backend.app.models import (
+    ClassroomContext,
+    KnowledgeTree,
+    LectureSession,
+    SessionHistoryDetail,
+    SessionHistorySummary,
+    TimelineItem,
+)
 
 
 @dataclass(frozen=True)
@@ -40,7 +59,11 @@ class StorageWriteResult:
 
 
 class LocalStorage:
-    """Write classroom session artifacts to the local filesystem."""
+    """Persist and read classroom session artifacts on the local filesystem.
+
+    LocalStorage 是 storage 层的唯一入口。API 路由只调用这里的公开方法，
+    不直接拼接文件路径或读取 JSON 文件，避免存储结构散落到路由层。
+    """
 
     def __init__(self, base_dir: Path | str = Path("data/sessions")) -> None:
         # base_dir 默认是项目根目录下的 data/sessions。测试时可传临时目录，
@@ -86,19 +109,126 @@ class LocalStorage:
         return StorageWriteResult(session_dir=session_dir, files=files)
 
     def session_dir(self, session_id: str) -> Path:
-        """Return the filesystem directory for a session."""
+        """Return the filesystem directory for a session.
+
+        这里不检查目录是否存在，只负责统一路径规则。读写方法在自己的
+        语义里决定是创建目录、返回空列表，还是把 FileNotFoundError
+        交给 API 层映射为 404。
+        """
         return self.base_dir / session_id
 
     def session_exists(self, session_id: str) -> bool:
-        """Return whether a persisted session directory exists."""
+        """Return whether a persisted session directory exists.
+
+        这个方法只判断目录存在性，不保证目录内四个课堂产物文件完整。
+        若需要完整读取，请使用 read_session()，让缺失文件自然暴露为错误。
+        """
         return self.session_dir(session_id).exists()
 
     def read_metadata(self, session_id: str) -> dict:
         """Read persisted metadata.json for history features.
 
-        后续 GET /sessions 在内存 miss 时可调用此方法回退读取历史课堂。
+        GET /sessions/{session_id} 在内存 miss 时调用此方法回退读取历史
+        课堂元信息。返回 dict 而不是 LectureSession，是为了让调用方明确
+        决定要不要做 Pydantic 校验，以及如何把校验失败映射给用户。
         """
         return self._read_json(self.session_dir(session_id) / "metadata.json")
+
+    def list_sessions(self) -> list[SessionHistorySummary]:
+        """Return summaries for all persisted sessions, newest first.
+
+        列表页需要“快”和“宽容”：它只依赖 metadata.json，并在 timeline.json
+        存在时额外统计 event_count。这样即使某个历史目录还没有完整产物
+        或者是开发时手动残留的目录，也不会阻塞整个历史列表。
+
+        目录过滤策略：
+          - base_dir 不存在：说明还没有任何已保存课堂，返回空列表。
+          - 非目录条目：跳过，例如 .gitkeep。
+          - 缺少 metadata.json：跳过，因为没有可展示的课堂元信息。
+          - 缺少 timeline.json：event_count 记为 0，仍允许展示摘要。
+        """
+        summaries: list[SessionHistorySummary] = []
+        if not self.base_dir.exists():
+            return summaries
+
+        for session_dir in self.base_dir.iterdir():
+            # data/sessions 里可能有 .gitkeep 或临时文件；历史列表只关心
+            # 每个 session_id 对应的目录。
+            if not session_dir.is_dir():
+                continue
+
+            metadata_path = session_dir / "metadata.json"
+            timeline_path = session_dir / "timeline.json"
+            # 没有 metadata 就无法构造 LectureSession。与其让一个坏目录
+            # 破坏整个列表，不如跳过它，完整详情读取再严格报错。
+            if not metadata_path.exists():
+                continue
+
+            # 读取时重新通过 Pydantic 校验，保证历史 API 输出仍遵守当前
+            # 后端模型契约。旧文件若格式不兼容，会尽早暴露。
+            session = LectureSession.model_validate(self._read_json(metadata_path))
+            event_count = 0
+            if timeline_path.exists():
+                event_count = len(self._read_json_list(timeline_path))
+
+            summaries.append(
+                SessionHistorySummary(
+                    session=session,
+                    event_count=event_count,
+                    storage_path=str(session_dir),
+                )
+            )
+
+        return sorted(
+            summaries,
+            # new_session_id 中含时间戳，但排序应以模型字段为准；这样即使
+            # 后续 session_id 规则改变，历史列表仍按课堂开始时间倒序。
+            key=lambda item: item.session.start_time,
+            reverse=True,
+        )
+
+    def read_session(self, session_id: str) -> SessionHistoryDetail:
+        """Read a complete persisted session for history playback.
+
+        与 list_sessions() 的宽容策略不同，详情页需要完整课后档案。
+        因此这里要求四个文件都存在且格式正确：
+          - metadata.json -> LectureSession
+          - timeline.json -> list[TimelineItem]
+          - knowledge_graph.json -> KnowledgeTree
+          - transcript.md -> 原始 Markdown 字符串
+
+        缺文件或 JSON 结构错误会抛出 FileNotFoundError / ValueError /
+        Pydantic ValidationError。API 层负责把这些异常转换成 404 或后续
+        更细的错误响应。
+        """
+        session_dir = self.session_dir(session_id)
+        # metadata 是详情页标题、课程、起止时间和状态的唯一来源。
+        session = LectureSession.model_validate(
+            self._read_json(session_dir / "metadata.json")
+        )
+        # timeline 用于前端历史回放。逐条校验可以避免坏数据进入 UI reducer。
+        timeline = [
+            TimelineItem.model_validate(item)
+            for item in self._read_json_list(session_dir / "timeline.json")
+        ]
+        # knowledge_graph 是结束课堂时保存的完整快照；历史页不需要重放
+        # graph_patch，而是直接渲染这个最终状态。
+        knowledge_graph = KnowledgeTree.model_validate(
+            self._read_json(session_dir / "knowledge_graph.json")
+        )
+        # transcript.md 保留 Markdown 形态，方便前端直接展示，也方便未来
+        # post-class skill 把它作为 LLM 输入素材。
+        transcript_markdown = (session_dir / "transcript.md").read_text(
+            encoding="utf-8"
+        )
+
+        return SessionHistoryDetail(
+            session=session,
+            transcript_markdown=transcript_markdown,
+            timeline=timeline,
+            knowledge_graph=knowledge_graph,
+            storage_path=str(session_dir),
+        )
 
     # ── 文件格式处理 ─────────────────────────────────────────
 
@@ -136,8 +266,27 @@ class LocalStorage:
         )
 
     def _read_json(self, path: Path) -> dict:
-        """Read one JSON file as a dictionary."""
-        return json.loads(path.read_text(encoding="utf-8"))
+        """Read one JSON file as a dictionary.
+
+        metadata.json 和 knowledge_graph.json 的顶层结构都应是 object。
+        如果未来某个调用点需要读取数组，请使用 _read_json_list()，
+        这样文件格式错误会在 storage 层更清楚地暴露。
+        """
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError(f"Expected JSON object in {path}")
+        return data
+
+    def _read_json_list(self, path: Path) -> list:
+        """Read one JSON file as a list.
+
+        timeline.json 的顶层结构是数组。这里单独做类型检查，是为了避免
+        后续代码把 dict 当成可迭代条目列表时产生更难定位的错误。
+        """
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, list):
+            raise ValueError(f"Expected JSON list in {path}")
+        return data
 
     def _write_text(self, path: Path, content: str) -> None:
         """Write UTF-8 text content."""

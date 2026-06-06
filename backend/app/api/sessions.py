@@ -40,7 +40,13 @@ from backend.app.core import (
     session_manager,
     websocket_manager,
 )
-from backend.app.models import LectureSession, StartSessionRequest, WebSocketMessage
+from backend.app.models import (
+    LectureSession,
+    SessionHistoryDetail,
+    SessionHistoryListResponse,
+    StartSessionRequest,
+    WebSocketMessage,
+)
 from backend.app.storage import local_storage
 
 
@@ -120,7 +126,33 @@ async def get_session(session_id: str) -> LectureSession:
     try:
         return session_manager.get_session(session_id)
     except SessionNotFoundError:
-        raise HTTPException(status_code=404, detail="Session not found")
+        try:
+            return LectureSession.model_validate(local_storage.read_metadata(session_id))
+        except (FileNotFoundError, ValueError):
+            raise HTTPException(status_code=404, detail="Session not found")
+
+
+@router.get("", response_model=SessionHistoryListResponse)
+async def list_history_sessions() -> SessionHistoryListResponse:
+    """读取已保存的历史课堂列表。
+
+    返回本地 ``data/sessions`` 下已落盘课堂的元信息摘要。课堂仍在录制但
+    尚未结束保存时不会出现在这个历史列表中。
+    """
+    return SessionHistoryListResponse(sessions=local_storage.list_sessions())
+
+
+@router.get("/{session_id}/history", response_model=SessionHistoryDetail)
+async def get_history_session(session_id: str) -> SessionHistoryDetail:
+    """读取一节已保存课堂的课后历史内容。
+
+    包含 metadata、transcript.md、timeline.json 和 knowledge_graph.json，
+    供前端历史回放、课后总结和技能模块消费。
+    """
+    try:
+        return local_storage.read_session(session_id)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail="Saved session not found")
 
 
 # ── 结束会话 ──────────────────────────────────────────────────────

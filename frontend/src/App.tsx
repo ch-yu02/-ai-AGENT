@@ -1,15 +1,22 @@
 import { useEffect, useReducer, useRef, useState } from "react";
 
 import { ClassroomControls } from "./components/ClassroomControls";
+import { HistoryPanel } from "./components/HistoryPanel";
 import { KnowledgeGraphPanel } from "./components/KnowledgeGraphPanel";
 import { RealtimeTranscriptPanel } from "./components/RealtimeTranscriptPanel";
 import { StatusStrip } from "./components/StatusStrip";
 import { TimelinePanel } from "./components/TimelinePanel";
 import { VisualOcrPanel } from "./components/VisualOcrPanel";
-import { ApiError, endSession, startSession } from "./services/api";
+import {
+  ApiError,
+  endSession,
+  getHistorySession,
+  listHistorySessions,
+  startSession,
+} from "./services/api";
 import { connectClassroomSocket } from "./services/websocket";
 import { classroomReducer, initialDashboardState } from "./stores/classroomStore";
-import type { WebSocketMessage } from "./types/classroom";
+import type { SessionHistorySummary, WebSocketMessage } from "./types/classroom";
 
 function App() {
   // 页面主状态由 classroomReducer 管理。
@@ -27,6 +34,19 @@ function App() {
   // WebSocket 断线、mock sender 联调提示等运行状态。
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
+  // 历史课程列表来自 GET /sessions。
+  //
+  // 这里有意把“列表 UI 状态”留在 App，而不是放进 classroomReducer：
+  // - historySessions / selectedHistoryId 只服务左侧历史栏。
+  // - isHistoryLoading / isHistoryOpening 是按钮和提示状态。
+  // - 真正会影响四个课堂内容面板的数据，才通过 history.loaded 进入 reducer。
+  //
+  // 这样实时课堂状态、历史详情状态和页面交互状态各自待在合适的位置。
+  const [historySessions, setHistorySessions] = useState<SessionHistorySummary[]>([]);
+  const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
+  const [isHistoryLoading, setIsHistoryLoading] = useState(false);
+  const [isHistoryOpening, setIsHistoryOpening] = useState(false);
+
   // 保存当前课堂的 WebSocket 实例。
   //
   // WebSocket 是浏览器对象，不属于可渲染 UI 数据，所以用 ref 而不是 state。
@@ -36,11 +56,41 @@ function App() {
   // 组件卸载时关闭 WebSocket。
   // Vite 热更新、页面跳转或未来加路由时，如果不清理连接，后端还会保留旧订阅者。
   useEffect(() => {
+    // 页面首次打开就静默加载历史列表。silent=true 表示失败时仍会显示错误，
+    // 成功时不打扰用户；顶部状态提示继续留给“开始/结束课堂”等主动操作。
+    void loadHistorySessions({ silent: true });
+
     return () => {
       socketRef.current?.close();
       socketRef.current = null;
     };
   }, []);
+
+  // 刷新历史课程列表。
+  //
+  // 后端 GET /sessions 只返回已保存课堂的摘要，不会返回正在录制但尚未结束的
+  // 内存 session。结束课堂后这里会被静默调用一次，让新保存的课堂自然出现在
+  // 左侧列表里；用户也可以点“刷新”主动重新读取磁盘历史。
+  async function loadHistorySessions(options: { silent?: boolean } = {}) {
+    setIsHistoryLoading(true);
+
+    if (!options.silent) {
+      setStatusMessage(null);
+    }
+
+    try {
+      const response = await listHistorySessions();
+      setHistorySessions(response.sessions);
+
+      if (!options.silent) {
+        setStatusMessage(`已刷新历史课程：${response.sessions.length} 节。`);
+      }
+    } catch (error) {
+      setStatusMessage(formatApiError(error, "读取历史课程失败"));
+    } finally {
+      setIsHistoryLoading(false);
+    }
+  }
 
   // 为指定 session 建立 WebSocket 订阅。
   //
@@ -142,6 +192,9 @@ function App() {
         type: "session.started",
         session,
       });
+      // 新课堂开始后，右侧看板已经切到实时课堂；清空历史选中态，避免左侧
+      // 仍高亮某节历史课，让用户误以为当前显示的是历史内容。
+      setSelectedHistoryId(null);
       setStatusMessage("课堂已开始，正在连接 WebSocket。");
       connectWebSocket(session.session_id);
     } catch (error) {
@@ -175,10 +228,49 @@ function App() {
       socketRef.current?.close();
       socketRef.current = null;
       setStatusMessage("课堂已结束，本地文件已由后端保存。");
+      // 保存发生在后端 end 路由里。HTTP 成功返回后刷新历史列表即可看到
+      // 刚结束的课堂；silent 避免覆盖“课堂已结束”的主提示。
+      void loadHistorySessions({ silent: true });
     } catch (error) {
       setStatusMessage(formatApiError(error, "结束课堂失败"));
     } finally {
       setIsSessionRequestPending(false);
+    }
+  }
+
+  // 打开历史课程详情：
+  // 1. 调用 GET /sessions/{session_id}/history 读取完整课后档案。
+  // 2. 关闭现有 WebSocket，保证历史查看模式不会继续消费实时事件。
+  // 3. 通过 history.loaded 把历史详情装载进同一套 dashboard 面板。
+  //
+  // 录制中的课堂不允许切历史，因为那会清空当前实时看板并关闭 socket。
+  // 后续如果要支持“边录制边看历史”，应引入独立路由或双看板，而不是复用
+  // 当前单看板状态。
+  async function handleOpenHistory(sessionId: string) {
+    if (state.session?.status === "recording") {
+      setStatusMessage("当前课堂正在录制，结束后再查看历史课程。");
+      return;
+    }
+
+    setIsHistoryOpening(true);
+    setStatusMessage(null);
+
+    try {
+      const detail = await getHistorySession(sessionId);
+      // 历史课程是只读回放，不需要 WebSocket。关闭旧连接可以防止刚打开历史
+      // 后，旧 session 的迟到消息又把右侧面板改回实时内容。
+      socketRef.current?.close();
+      socketRef.current = null;
+      dispatch({
+        type: "history.loaded",
+        detail,
+      });
+      setSelectedHistoryId(sessionId);
+      setStatusMessage("历史课程已加载。");
+    } catch (error) {
+      setStatusMessage(formatApiError(error, "加载历史课程失败"));
+    } finally {
+      setIsHistoryOpening(false);
     }
   }
 
@@ -210,12 +302,26 @@ function App() {
 
       {statusMessage ? <div className="status-message">{statusMessage}</div> : null}
 
-      {/* 四个实时数据面板共享 App 状态，但组件内部不直接请求后端。 */}
-      <section className="dashboard-grid" aria-label="课堂实时内容">
-        <RealtimeTranscriptPanel transcript={state.transcript} />
-        <TimelinePanel timeline={state.timeline} />
-        <VisualOcrPanel visuals={state.visuals} />
-        <KnowledgeGraphPanel graph={state.graph} />
+      <section className="content-layout" aria-label="课堂内容">
+        {/* 历史栏只负责列表和打开动作；具体历史详情如何变成面板状态，
+            仍由 App + reducer 处理，组件本身不 fetch。 */}
+        <HistoryPanel
+          sessions={historySessions}
+          selectedSessionId={selectedHistoryId}
+          isLoading={isHistoryLoading}
+          isOpening={isHistoryOpening}
+          isOpenDisabled={state.session?.status === "recording"}
+          onRefresh={() => void loadHistorySessions()}
+          onOpen={handleOpenHistory}
+        />
+
+        {/* 四个数据面板共享 App 状态，但组件内部不直接请求后端。 */}
+        <section className="dashboard-grid" aria-label="课堂看板内容">
+          <RealtimeTranscriptPanel transcript={state.transcript} />
+          <TimelinePanel timeline={state.timeline} />
+          <VisualOcrPanel visuals={state.visuals} />
+          <KnowledgeGraphPanel graph={state.graph} />
+        </section>
       </section>
     </main>
   );

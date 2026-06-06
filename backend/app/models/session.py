@@ -13,6 +13,9 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
+from .context import TimelineItem
+from .knowledge import KnowledgeTree
+
 
 # ── 类型别名 ────────────────────────────────────────────────────
 
@@ -113,3 +116,36 @@ class LectureSession(BaseModel):
     """创建者身份标识。"""
     device_id: str | None = None
     """发起设备的硬件标识。"""
+
+
+class SessionHistorySummary(BaseModel):
+    """历史课堂列表中的单条摘要。"""
+
+    session: LectureSession
+    """课堂元信息。"""
+    event_count: int = 0
+    """已保存时间线条目数，用于列表快速展示课堂内容量。"""
+    storage_path: str
+    """本地历史课堂目录路径。"""
+
+
+class SessionHistoryListResponse(BaseModel):
+    """历史课堂列表响应。"""
+
+    sessions: list[SessionHistorySummary] = Field(default_factory=list)
+    """按开始时间倒序排列的历史课堂摘要。"""
+
+
+class SessionHistoryDetail(BaseModel):
+    """单节历史课堂的完整读取结果。"""
+
+    session: LectureSession
+    """课堂元信息。"""
+    transcript_markdown: str
+    """保存到 transcript.md 的人可读字幕记录。"""
+    timeline: list[TimelineItem] = Field(default_factory=list)
+    """保存到 timeline.json 的统一时间线。"""
+    knowledge_graph: KnowledgeTree
+    """保存到 knowledge_graph.json 的完整知识图谱快照。"""
+    storage_path: str
+    """本地历史课堂目录路径。"""

@@ -58,6 +58,7 @@ export type TimelineItem = {
   ts: number;
   title: string;
   data: Record<string, unknown>;
+  created_at?: string;
 };
 
 // 知识图谱节点。字段来自 GraphPatch operation 中的 node。
@@ -66,7 +67,7 @@ export type KnowledgeNode = {
   label: string;
   type: string;
   summary?: string | null;
-  level?: number;
+  level?: number | null;
   importance?: number | null;
 };
 
@@ -84,6 +85,47 @@ export type KnowledgeGraphView = {
   nodes: KnowledgeNode[];
   edges: KnowledgeEdge[];
   version: number;
+};
+
+// 后端保存到 knowledge_graph.json 的完整图谱快照。
+// 历史详情读取的是完整快照，不是实时 graph_patch。
+export type KnowledgeTree = KnowledgeGraphView & {
+  // 这三个字段来自后端 KnowledgeTree。当前前端图谱面板只需要 nodes/edges/version，
+  // 但保留 session_id/root_nodes/updated_at 可以让后续历史详情页、树形目录或
+  // post-class skill 不必重新改 API 类型。
+  session_id: string;
+  root_nodes: string[];
+  updated_at?: string;
+};
+
+// GET /sessions 的单条历史课程摘要。
+export type SessionHistorySummary = {
+  // 后端 metadata.json 反序列化出的课堂元信息。
+  session: LectureSession;
+  // 后端通过 timeline.json 长度计算，用来在列表里快速显示课堂内容量。
+  event_count: number;
+  // 本地存储目录，主要用于联调和后续本地文件定位；UI 不依赖它拼文件路径。
+  storage_path: string;
+};
+
+// GET /sessions 的响应体。
+export type SessionHistoryListResponse = {
+  sessions: SessionHistorySummary[];
+};
+
+// GET /sessions/{session_id}/history 的响应体。
+export type SessionHistoryDetail = {
+  // metadata.json
+  session: LectureSession;
+  // transcript.md。当前看板的字幕列表从 timeline.data 还原，
+  // 这个 Markdown 字段保留给后续“全文阅读/导出/总结”视图。
+  transcript_markdown: string;
+  // timeline.json。历史看板的时间线、字幕和视觉内容都从这里派生。
+  timeline: TimelineItem[];
+  // knowledge_graph.json。历史图谱直接展示结束课堂时的最终快照。
+  knowledge_graph: KnowledgeTree;
+  // 本地 session 目录路径，用于调试和未来打开本地资源。
+  storage_path: string;
 };
 
 // 单条图谱增量操作。

@@ -1,4 +1,8 @@
-import type { LectureSession } from "../types/classroom";
+import type {
+  LectureSession,
+  SessionHistoryDetail,
+  SessionHistoryListResponse,
+} from "../types/classroom";
 
 // 后端 API 基地址。
 // 默认指向 AGENTS.md / API_SCHEMA.md 约定的本地 FastAPI 服务。
@@ -96,4 +100,25 @@ export function endSession(sessionId: string): Promise<LectureSession> {
   return requestJson<LectureSession>(`/sessions/${sessionId}/end`, {
     method: "POST",
   });
+}
+
+// 读取已经结束并保存到本地的历史课堂列表。
+//
+// 后端对应 GET /sessions，只读取 data/sessions 下的 metadata.json 和
+// timeline.json 统计信息。它是一个“列表入口”：
+// - 响应小，适合页面加载时自动调用。
+// - 不包含 transcript_markdown 和完整 knowledge_graph。
+// - 正在录制但尚未 end/save 的课堂不会出现在这里。
+export function listHistorySessions(): Promise<SessionHistoryListResponse> {
+  return requestJson<SessionHistoryListResponse>("/sessions");
+}
+
+// 读取单节历史课堂的完整课后档案。
+//
+// 后端对应 GET /sessions/{session_id}/history，会一次性返回结束课堂时保存的
+// 四类产物：metadata、transcript.md、timeline.json、knowledge_graph.json。
+// 前端拿到的是“完整快照”，不是实时事件流，所以 App 会关闭 WebSocket，
+// 再把 detail 交给 reducer 的 history.loaded 动作。
+export function getHistorySession(sessionId: string): Promise<SessionHistoryDetail> {
+  return requestJson<SessionHistoryDetail>(`/sessions/${sessionId}/history`);
 }

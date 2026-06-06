@@ -8,6 +8,7 @@ import type {
   KnowledgeGraphView,
   KnowledgeNode,
   LectureSession,
+  SessionHistoryDetail,
   TimelineItem,
   TranscriptSegment,
   WebSocketMessage,
@@ -51,6 +52,12 @@ export type ClassroomAction =
   | {
       type: "websocket.messageReceived";
       message: WebSocketMessage;
+    }
+  | {
+      // 历史详情加载完成后进入同一个 reducer。这样四个展示面板不用关心
+      // 数据来自 WebSocket 实时流，还是来自本地历史文件快照。
+      type: "history.loaded";
+      detail: SessionHistoryDetail;
     };
 
 export function classroomReducer(
@@ -83,7 +90,37 @@ export function classroomReducer(
 
     case "websocket.messageReceived":
       return applyWebSocketMessage(state, action.message);
+
+    case "history.loaded":
+      // 打开历史课时，旧实时课堂状态会被完整替换为历史快照。
+      // 左侧历史列表的加载/选中状态不放在这里，仍由 App 管理。
+      return applyHistoryDetail(action.detail);
   }
+}
+
+function applyHistoryDetail(detail: SessionHistoryDetail): ClassroomDashboardState {
+  // 历史详情和实时消息的形态不同：
+  // - 实时模式通过 event.received 一条条推送 transcript/image/graph_patch。
+  // - 历史模式直接返回 timeline + knowledge_graph 完整快照。
+  //
+  // 为了复用现有四个面板，这里把历史快照转换成 ClassroomDashboardState：
+  // - transcript 从 timeline 中 type=transcript 的 data 反推。
+  // - visuals 从 timeline 中 type=visual 的 data 反推。
+  // - graph 直接使用 knowledge_graph 的最终 nodes/edges/version。
+  // - websocketStatus 固定为 disconnected，因为历史课是只读档案。
+  return {
+    session: detail.session,
+    websocketStatus: "disconnected",
+    eventCount: detail.timeline.length,
+    transcript: extractTranscriptFromTimeline(detail.timeline),
+    timeline: detail.timeline,
+    visuals: extractVisualsFromTimeline(detail.timeline),
+    graph: {
+      nodes: detail.knowledge_graph.nodes,
+      edges: detail.knowledge_graph.edges,
+      version: detail.knowledge_graph.version,
+    },
+  };
 }
 
 function applyWebSocketMessage(
@@ -414,6 +451,32 @@ function isImageCapture(value: unknown): value is ImageCapture {
     typeof data.image_path === "string" &&
     typeof data.status === "string"
   );
+}
+
+function extractTranscriptFromTimeline(timeline: TimelineItem[]): TranscriptSegment[] {
+  // LocalStorage 保存 transcript.md 主要给人读；前端面板更适合消费结构化
+  // TranscriptSegment。ContextManager 在保存 timeline 时会把标准化片段放进
+  // timeline_item.data，所以历史回放可以从这里还原字幕列表。
+  return timeline.flatMap((item) => {
+    if (item.type !== "transcript" || !isTranscriptSegment(item.data)) {
+      return [];
+    }
+
+    return [item.data];
+  });
+}
+
+function extractVisualsFromTimeline(timeline: TimelineItem[]): ImageCapture[] {
+  // 图片/OCR 面板依赖 ImageCapture。历史详情没有单独返回 visuals 数组，
+  // 因此从 type=visual 的 timeline item 中还原。遇到不完整的历史数据时
+  // 直接跳过该项，时间线本身仍会展示出来，页面不会整体崩掉。
+  return timeline.flatMap((item) => {
+    if (item.type !== "visual" || !isImageCapture(item.data)) {
+      return [];
+    }
+
+    return [item.data];
+  });
 }
 
 function readObject(value: unknown): Record<string, unknown> | null {
