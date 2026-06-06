@@ -11,3 +11,6 @@ __pycache__/
 
 data/sessions/*
 !data/sessions/.gitkeep
+
+docs/选题.md
+docs/初选项目设计方案书.odt
