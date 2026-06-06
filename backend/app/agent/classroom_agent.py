@@ -21,7 +21,6 @@ the skill methods later without changing the HTTP contract.
 """
 
 from dataclasses import dataclass
-import re
 
 from backend.app.core import ContextManager, ContextNotFoundError
 from backend.app.core import KnowledgeGraphManager, KnowledgeGraphNotFoundError
@@ -33,6 +32,7 @@ from backend.app.models import (
     TimelineItem,
     TranscriptSegment,
 )
+from backend.app.rag import QueryService, RagSourceRef, build_session_documents
 from backend.app.storage import LocalStorage
 
 from .intent_router import IntentRouter
@@ -87,11 +87,13 @@ class ClassroomAgent:
         knowledge_graph_manager: KnowledgeGraphManager,
         storage: LocalStorage,
         intent_router: IntentRouter | None = None,
+        query_service: QueryService | None = None,
     ) -> None:
         self.context_manager = context_manager
         self.knowledge_graph_manager = knowledge_graph_manager
         self.storage = storage
         self.intent_router = intent_router or IntentRouter()
+        self.query_service = query_service or QueryService()
 
     def chat(self, request: AgentChatRequest) -> AgentChatResponse:
         """Route one prompt and run the matching local skill.
@@ -351,112 +353,22 @@ class ClassroomAgent:
         prompt: str,
         data: ClassroomAgentData,
     ) -> AgentChatResponse:
-        """Answer a question by keyword-searching classroom sources.
+        """Answer a question through the RAG query service.
 
-        这不是完整 RAG，只是 Phase 1 的本地检索：把 prompt 拆成关键词，然后在
-        transcript / visual OCR-caption / knowledge node 中找包含关系。命中内容
-        直接作为回答依据返回，不进行无依据扩写。
+        Phase 3 先把 QA 从 Agent 内部搜索迁移到 ``backend.app.rag``。当前
+        QueryService 仍是本地关键词检索，但它已经使用“课堂文档 + 查询服务”的
+        形态，后续替换为 LlamaIndex 时不需要改 Agent API。
         """
-        candidates = self._search_sources(prompt, data)
-        source_refs = [ref for _, ref in candidates[:5]]
-
-        if source_refs:
-            answer = "我在课堂资料中找到这些相关内容：\n" + "\n".join(
-                f"- {ref.text}" for ref in source_refs
-            )
-            warnings: list[str] = []
-        else:
-            answer = "没有在课堂资料中找到足够依据回答这个问题。"
-            warnings = ["请换一个课堂中出现过的关键词，或等更多课堂数据进入系统。"]
+        documents = build_session_documents(data.context, data.knowledge_graph)
+        result = self.query_service.query(prompt, documents)
 
         return AgentChatResponse(
             session_id=session_id,
             intent=intent,
-            answer=answer,
-            source_refs=source_refs,
-            warnings=warnings,
+            answer=result.answer,
+            source_refs=[self._rag_ref(ref) for ref in result.source_refs],
+            warnings=result.warnings,
         )
-
-    def _search_sources(
-        self,
-        prompt: str,
-        data: ClassroomAgentData,
-    ) -> list[tuple[int, AgentSourceRef]]:
-        """Search classroom materials and return scored source references.
-
-        返回值保留 score，是为了排序时优先展示更相关的来源；调用方只会把
-        ``AgentSourceRef`` 暴露给前端。Phase 3 接 LlamaIndex 后，这个方法可以
-        替换成 query_service 返回的 source refs。
-        """
-        keywords = self._keywords(prompt)
-        scored: list[tuple[int, AgentSourceRef]] = []
-
-        # 字幕是 QA 最常用来源，保留 segment_id 和课堂相对时间，前端未来可跳转。
-        for segment in data.context.transcript:
-            score = self._score(segment.text, keywords)
-            if score > 0:
-                scored.append((score, self._segment_ref(segment)))
-
-        # 视觉来源把 OCR 和 caption 合并检索。image_path 只作为没有文本时的兜底。
-        for visual in data.context.visuals:
-            text = " ".join(
-                part for part in (visual.ocr_text, visual.caption) if part
-            )
-            score = self._score(text, keywords)
-            if score > 0:
-                scored.append((score, self._visual_ref(visual, text)))
-
-        # 知识节点适合回答“某个概念是什么”。当前 KnowledgeNode 没有 ts，
-        # 因此 source ref 只返回 node_id 和摘要文本。
-        for node in data.knowledge_graph.nodes:
-            text = " ".join(part for part in (node.label, node.summary) if part)
-            score = self._score(text, keywords)
-            if score > 0:
-                scored.append((score, self._node_ref(node)))
-
-        return sorted(scored, key=lambda item: item[0], reverse=True)
-
-    def _keywords(self, prompt: str) -> list[str]:
-        """Extract coarse keywords from a Chinese/English prompt.
-
-        这里不是通用分词器，只做足够 demo 使用的规则处理：
-        - 去掉“讲了什么/这节课/老师”等问题外壳。
-        - 保留英文单词和连续中文短语。
-        - 对较长中文短语生成 4 字滑窗，提高“傅里叶变换讲了什么”这类问题的
-          命中率。
-        """
-        normalized = prompt.lower()
-        stop_phrases = (
-            "讲了什么",
-            "是什么",
-            "这一段",
-            "这节课",
-            "老师",
-            "什么",
-            "一下",
-            "这个",
-            "根据",
-            "课堂",
-        )
-        for phrase in stop_phrases:
-            normalized = normalized.replace(phrase, " ")
-
-        tokens = re.findall(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]{2,}", normalized)
-        keywords = [token for token in tokens if token.strip()]
-        for token in list(keywords):
-            if re.fullmatch(r"[\u4e00-\u9fff]{4,}", token):
-                # 没有引入 jieba 等依赖，所以用简单滑窗覆盖中文长词的局部匹配。
-                keywords.extend(
-                    token[index : index + 4] for index in range(0, len(token) - 3)
-                )
-        if not keywords and prompt.strip():
-            keywords = [prompt.strip()]
-        return list(dict.fromkeys(keywords))
-
-    def _score(self, text: str, keywords: list[str]) -> int:
-        """Score a source by total matched keyword length."""
-        normalized = text.lower()
-        return sum(len(keyword) for keyword in keywords if keyword in normalized)
 
     def _segment_ref(self, segment) -> AgentSourceRef:
         """Build a source ref for one transcript segment."""
@@ -483,6 +395,15 @@ class ClassroomAgent:
             id=node.node_id,
             text=node.summary or node.label,
         )
+
+    def _rag_ref(self, ref: RagSourceRef) -> AgentSourceRef:
+        """Convert a RAG-layer source reference to the Agent API schema."""
+        ref_type = (
+            ref.type
+            if ref.type in {"segment", "visual", "knowledge_node"}
+            else "timeline"
+        )
+        return AgentSourceRef(type=ref_type, id=ref.id, ts=ref.ts, text=ref.text)
 
 
 __all__ = ["AgentSessionNotFoundError", "ClassroomAgent", "ClassroomAgentData"]
