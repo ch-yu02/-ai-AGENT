@@ -217,17 +217,36 @@ button:disabled {
 .history-item {
   background: #ffffff;
   border: 1px solid #e3e9f1;
+  border-radius: 8px;
   color: #172033;
   display: grid;
-  gap: 6px;
-  min-height: 96px;
-  padding: 12px;
+  gap: 8px;
+  min-height: 112px;
+  padding: 10px;
   text-align: left;
 }
 
 .history-item.active {
   border-color: #1f6feb;
   box-shadow: inset 3px 0 0 #1f6feb;
+}
+
+.history-open-button {
+  background: transparent;
+  color: inherit;
+  display: grid;
+  gap: 6px;
+  min-height: 0;
+  padding: 0;
+  text-align: left;
+}
+
+.history-delete-button {
+  background: #fff1f0;
+  color: #b42318;
+  justify-self: start;
+  min-height: 32px;
+  padding: 0 10px;
 }
 
 .history-title {

@@ -653,7 +653,7 @@ GET /history/{session_id}
 ## 9. Mock Sender
 
 mock sender 用于在真实 ASR/OCR/SLM 未接入时，自动向后端喂一组中文课堂
-模拟数据。
+模拟数据。它不会创建课堂；课堂开始必须先从前端页面手动发起。
 
 先启动后端：
 
@@ -661,37 +661,37 @@ mock sender 用于在真实 ASR/OCR/SLM 未接入时，自动向后端喂一组�
 .venv/bin/uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-默认运行：
+先在前端点击开始课堂，复制页面上的 `session_id`，然后运行：
 
 ```bash
-.venv/bin/python backend/scripts/mock_sender.py
+.venv/bin/python backend/scripts/mock_sender.py --session-id REPLACE_WITH_SESSION_ID --no-end
 ```
 
 快速发送：
 
 ```bash
-.venv/bin/python backend/scripts/mock_sender.py --delay 0
+.venv/bin/python backend/scripts/mock_sender.py --session-id REPLACE_WITH_SESSION_ID --delay 0 --no-end
 ```
 
-发送完但不结束课堂：
+发送完并触发结束课堂：
 
 ```bash
-.venv/bin/python backend/scripts/mock_sender.py --no-end
+.venv/bin/python backend/scripts/mock_sender.py --session-id REPLACE_WITH_SESSION_ID
 ```
 
 指定后端地址：
 
 ```bash
-.venv/bin/python backend/scripts/mock_sender.py --base-url http://127.0.0.1:8000
+.venv/bin/python backend/scripts/mock_sender.py --base-url http://127.0.0.1:8000 --session-id REPLACE_WITH_SESSION_ID --no-end
 ```
 
 mock sender 当前会模拟：
 
-1. 创建课堂。
+1. 使用已有课堂 session。
 2. 发送多条 `transcript.segment`。
 3. 发送 `image.capture`，包含 OCR 文本和 VLM 描述。
 4. 发送多条 `knowledge.extraction`，驱动知识图谱增量更新。
-5. 默认结束课堂并保存本地文件。
+5. 默认结束课堂并保存本地文件；加 `--no-end` 时保留 recording 状态。
 
 ## 10. 前端接入建议
 

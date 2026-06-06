@@ -3,7 +3,7 @@
 这个脚本用于在真实 ASR、OCR/VLM、SLM 模块尚未接入时，假装这些模块
 已经在持续产生数据。它会按顺序调用后端 HTTP API：
 
-1. 创建一节课堂 session。
+1. 使用前端页面已经创建好的课堂 session。
 2. 按时间间隔发送模拟字幕、图片和知识抽取事件。
 3. 默认自动结束课堂，触发本地保存。
 
@@ -11,12 +11,7 @@
 
     .venv/bin/uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 
-然后运行：
-
-    .venv/bin/python backend/scripts/mock_sender.py
-
-如果要配合前端页面联调，先在前端点击“开始课堂”，复制页面上的
-session_id，然后运行：
+先在前端点击“开始课堂”，复制页面上的 session_id，然后运行：
 
     .venv/bin/python backend/scripts/mock_sender.py --session-id lec_xxx --no-end
 """
@@ -275,23 +270,6 @@ def build_mock_events(session_id: str) -> list[MockEvent]:
     ]
 
 
-def start_session(base_url: str) -> dict[str, Any]:
-    """创建一节模拟课堂，返回后端生成的 session 对象。"""
-
-    return post_json(
-        base_url,
-        "/sessions/start",
-        {
-            "title": "通信原理第8讲：傅里叶变换",
-            "course": "通信原理",
-            "teacher": "张老师",
-            "language": "zh-CN",
-            "created_by": "mock_sender",
-            "device_id": "mock_device_001",
-        },
-    )
-
-
 def send_event(base_url: str, session_id: str, event: MockEvent) -> dict[str, Any]:
     """把一条 MockEvent 包装成 RealtimeEvent 后发送给后端。"""
 
@@ -316,21 +294,15 @@ def run_mock_sender(
     base_url: str,
     delay: float,
     should_end: bool,
-    session_id: str | None = None,
+    session_id: str,
 ) -> str:
-    """执行完整的模拟课堂数据流，返回本次写入的 session_id。
+    """向已有课堂发送完整的模拟课堂数据流，返回本次写入的 session_id。
 
-    默认行为保持原样：脚本自己创建一节课堂，然后往这节课堂发送 mock
-    事件。前端联调时可以传入 ``session_id``，脚本会跳过创建课堂，直接
-    往前端当前订阅的 session 写事件。
+    课堂开始必须由前端页面手动触发。脚本只接受已有 ``session_id``，
+    然后往前端当前订阅的 session 写事件。
     """
 
-    if session_id is None:
-        session = start_session(base_url)
-        session_id = session["session_id"]
-        print(f"已创建模拟课堂：{session_id}")
-    else:
-        print(f"使用已有课堂：{session_id}")
+    print(f"使用已有课堂：{session_id}")
 
     events = build_mock_events(session_id)
     for index, event in enumerate(events, start=1):
@@ -371,7 +343,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     parser.add_argument(
         "--session-id",
-        default=None,
+        required=True,
         help="使用已有课堂 session_id；适合前端先开始课堂并订阅 WebSocket 后联调。",
     )
     parser.add_argument(

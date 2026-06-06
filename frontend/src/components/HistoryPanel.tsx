@@ -5,7 +5,7 @@ import type { LectureSession, SessionHistorySummary } from "../types/classroom";
 // 这是一个纯展示/交互组件：
 // - 不直接调用 fetch。
 // - 不知道历史详情如何合并进 dashboard。
-// - 只把“刷新列表”和“打开某节课”两个用户动作交给 App。
+// - 只把“刷新列表”“打开某节课”“删除某节课”三个用户动作交给 App。
 //
 // 这样未来如果引入路由、分页或搜索，这个组件仍然可以复用为列表视图。
 type HistoryPanelProps = {
@@ -19,11 +19,15 @@ type HistoryPanelProps = {
   isLoading: boolean;
   // 正在打开详情时禁用所有历史项，避免用户快速连点导致请求竞态。
   isOpening: boolean;
+  // 正在删除的 session_id。只禁用对应删除按钮并展示“删除中”，其它历史项
+  // 仍可浏览，减少一次删除操作对整个列表的打断。
+  deletingSessionId: string | null;
   // App 在“课堂正在录制”时传 true。这里统一禁用历史项，避免打开历史
   // 详情时关闭当前录制课堂的 WebSocket。
   isOpenDisabled: boolean;
   onRefresh: () => void;
   onOpen: (sessionId: string) => void;
+  onDelete: (sessionId: string) => void;
 };
 
 export function HistoryPanel({
@@ -31,9 +35,11 @@ export function HistoryPanel({
   selectedSessionId,
   isLoading,
   isOpening,
+  deletingSessionId,
   isOpenDisabled,
   onRefresh,
   onOpen,
+  onDelete,
 }: HistoryPanelProps) {
   return (
     <aside className="history-panel" aria-labelledby="history-title">
@@ -59,26 +65,40 @@ export function HistoryPanel({
         </div>
       ) : (
         <div className="history-list" aria-label="历史课程列表">
-          {sessions.map((item) => (
-            <button
-              className={
-                item.session.session_id === selectedSessionId
-                  ? "history-item active"
-                  : "history-item"
-              }
-              disabled={isOpenDisabled || isOpening}
-              key={item.session.session_id}
-              type="button"
-              onClick={() => onOpen(item.session.session_id)}
-            >
-              <span className="history-title">{item.session.title}</span>
-              <span className="history-meta">{historyMeta(item.session)}</span>
-              <span className="history-foot">
-                <span>{item.event_count} 个事件</span>
-                <span>{item.session.status === "ended" ? "已结束" : "录制中"}</span>
-              </span>
-            </button>
-          ))}
+          {sessions.map((item) => {
+            const sessionId = item.session.session_id;
+            const isSelected = sessionId === selectedSessionId;
+            const isDeleting = sessionId === deletingSessionId;
+
+            return (
+              <article
+                className={isSelected ? "history-item active" : "history-item"}
+                key={sessionId}
+              >
+                <button
+                  className="history-open-button"
+                  disabled={isOpenDisabled || isOpening || isDeleting}
+                  type="button"
+                  onClick={() => onOpen(sessionId)}
+                >
+                  <span className="history-title">{item.session.title}</span>
+                  <span className="history-meta">{historyMeta(item.session)}</span>
+                  <span className="history-foot">
+                    <span>{item.event_count} 个事件</span>
+                    <span>{item.session.status === "ended" ? "已结束" : "录制中"}</span>
+                  </span>
+                </button>
+                <button
+                  className="history-delete-button"
+                  disabled={isDeleting}
+                  type="button"
+                  onClick={() => onDelete(sessionId)}
+                >
+                  {isDeleting ? "删除中" : "删除"}
+                </button>
+              </article>
+            );
+          })}
         </div>
       )}
     </aside>

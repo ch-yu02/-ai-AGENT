@@ -33,6 +33,7 @@ MVP 阶段先保证“演示主链路”稳定：课堂中全部数据留在内�
 """
 
 import json
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -230,6 +231,27 @@ class LocalStorage:
             storage_path=str(session_dir),
         )
 
+    def delete_session(self, session_id: str) -> bool:
+        """Delete one persisted session directory from local storage.
+
+        历史课堂删除是一个真正的本地文件删除操作。为了避免调用方传入
+        ``../`` 之类的路径逃出 ``data/sessions``，这里先把目标目录和
+        base_dir 都 resolve，再确认目标目录仍位于 base_dir 内部。
+
+        返回值：
+          - True：目录存在且已删除。
+          - False：目录不存在，或目标不是目录。
+
+        API 层会把 False 映射为 404。这个方法不删除内存中的 SessionManager
+        数据，因为历史删除只针对已落盘的课后档案。
+        """
+        session_dir = self._safe_session_dir(session_id)
+        if not session_dir.exists() or not session_dir.is_dir():
+            return False
+
+        shutil.rmtree(session_dir)
+        return True
+
     # ── 文件格式处理 ─────────────────────────────────────────
 
     def _render_transcript_markdown(self, context: ClassroomContext) -> str:
@@ -291,6 +313,18 @@ class LocalStorage:
     def _write_text(self, path: Path, content: str) -> None:
         """Write UTF-8 text content."""
         path.write_text(content, encoding="utf-8")
+
+    def _safe_session_dir(self, session_id: str) -> Path:
+        """Return a resolved session dir and ensure it stays under base_dir."""
+        base_dir = self.base_dir.resolve()
+        session_dir = (self.base_dir / session_id).resolve()
+
+        try:
+            session_dir.relative_to(base_dir)
+        except ValueError as exc:
+            raise ValueError(f"Unsafe session_id path: {session_id}") from exc
+
+        return session_dir
 
 
 local_storage = LocalStorage()

@@ -42,6 +42,7 @@ from backend.app.core import (
 )
 from backend.app.models import (
     LectureSession,
+    SessionDeleteResponse,
     SessionHistoryDetail,
     SessionHistoryListResponse,
     StartSessionRequest,
@@ -153,6 +154,25 @@ async def get_history_session(session_id: str) -> SessionHistoryDetail:
         return local_storage.read_session(session_id)
     except (FileNotFoundError, ValueError):
         raise HTTPException(status_code=404, detail="Saved session not found")
+
+
+@router.delete("/{session_id}/history", response_model=SessionDeleteResponse)
+async def delete_history_session(session_id: str) -> SessionDeleteResponse:
+    """删除一节已保存课堂的本地历史数据。
+
+    只删除 ``data/sessions/{session_id}`` 下的课后档案文件，不修改
+    SessionManager 中仍保留的内存 session。这样删除历史数据不会干扰当前
+    运行中的课堂生命周期，但历史列表和详情将不再能读取该 session。
+    """
+    try:
+        deleted = local_storage.delete_session(session_id)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid session_id")
+
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Saved session not found")
+
+    return SessionDeleteResponse(status="deleted", session_id=session_id)
 
 
 # ── 结束会话 ──────────────────────────────────────────────────────

@@ -29,19 +29,63 @@ LLM integration, and end-to-end demo hardening.
 
 ## Commands
 
-Run the backend:
+Preferred local helper:
+
+```bash
+scripts/dev.sh help
+```
+
+Start backend and frontend together:
+
+```bash
+scripts/dev.sh dev
+```
+
+Run all backend and frontend tests:
+
+```bash
+scripts/dev.sh test
+```
+
+Build/check the frontend:
+
+```bash
+scripts/dev.sh build
+```
+
+Compile-check backend files:
+
+```bash
+scripts/dev.sh compile
+```
+
+Run mock sender against a session created by the frontend UI. The classroom
+must be started manually from the frontend first:
+
+```bash
+scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
+```
+
+Use `BACKEND_HOST`, `BACKEND_PORT`, `FRONTEND_HOST`, and `FRONTEND_PORT` to
+override development server addresses. For LAN testing:
+
+```bash
+BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
+```
+
+Underlying backend command:
 
 ```bash
 .venv/bin/uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
 ```
 
-Run backend tests:
+Underlying backend tests:
 
 ```bash
 .venv/bin/python -m unittest discover -s backend/tests
 ```
 
-Compile-check backend files:
+Underlying backend compile-check:
 
 ```bash
 .venv/bin/python -m py_compile backend/app/main.py backend/app/api/*.py backend/app/core/*.py backend/app/models/*.py backend/app/storage/*.py backend/tests/*.py
@@ -53,43 +97,25 @@ Install/update backend dependencies:
 .venv/bin/pip install -r backend/requirements.txt
 ```
 
-Run the frontend:
+Underlying frontend command:
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-Build/check the frontend:
+Underlying frontend build:
 
 ```bash
 cd frontend
 npm run build
 ```
 
-Run frontend tests:
+Underlying frontend tests:
 
 ```bash
 cd frontend
 npm test
-```
-
-Run the mock sender against a running backend:
-
-```bash
-.venv/bin/python backend/scripts/mock_sender.py
-```
-
-Run the mock sender against a session created by the frontend UI:
-
-```bash
-.venv/bin/python backend/scripts/mock_sender.py --session-id REPLACE_WITH_SESSION_ID --no-end
-```
-
-Run the mock sender without ending the session:
-
-```bash
-.venv/bin/python backend/scripts/mock_sender.py --no-end
 ```
 
 Note: `fastapi.testclient.TestClient` has been unstable in this environment, so
@@ -166,6 +192,16 @@ The session end route should:
 Do not write event data directly from API routes. Keep persistence in
 `backend/app/storage/`.
 
+History deletion should follow the same storage boundary:
+
+1. Frontend calls `DELETE /sessions/{session_id}/history`.
+2. API routes delegate to `LocalStorage.delete_session()`.
+3. Storage removes only `data/sessions/{session_id}` after validating the target
+   stays inside the configured storage root.
+4. Deleting history does not remove or mutate in-memory `SessionManager` state.
+5. Frontend must remove the deleted item from the history list. If that history
+   item is currently loaded in the dashboard, clear the dashboard state.
+
 ## Event Contract
 
 Realtime input uses `RealtimeEvent`:
@@ -196,6 +232,9 @@ GET  /
 GET  /health
 POST /sessions/start
 GET  /sessions/{session_id}
+GET  /sessions
+GET  /sessions/{session_id}/history
+DELETE /sessions/{session_id}/history
 POST /sessions/{session_id}/end
 POST /events
 WS   /ws/{session_id}
@@ -253,6 +292,8 @@ Implemented panels:
 - `TimelinePanel`: `context_update.timeline_item` display.
 - `VisualOcrPanel`: `image.capture` OCR/caption display.
 - `KnowledgeGraphPanel`: deterministic node and relation view from graph patches.
+- `HistoryPanel`: saved session list, history detail opening, and history
+  deletion controls.
 
 Frontend WebSocket rules:
 
@@ -267,6 +308,13 @@ Frontend WebSocket rules:
 - Apply graph patch operations in order.
 - Treat `session.ended` as a final realtime state update, but keep transcript,
   timeline, visuals, and graph visible after ending the classroom.
+- Every `event.received` must update the frontend in realtime:
+  - all supported events append/update the unified timeline,
+  - `transcript.segment` updates the transcript panel,
+  - `image.capture` updates the visual/OCR panel,
+  - `knowledge.extraction` applies `graph_patch.operations` when present.
+- Deleting a history item is destructive for local files. Keep confirmation in
+  the frontend and keep backend deletion routed through `LocalStorage`.
 
 ## Testing Conventions
 
@@ -397,7 +445,7 @@ Copy the UI-generated `session_id`, then send mock events into that exact
 frontend session:
 
 ```bash
-.venv/bin/python backend/scripts/mock_sender.py --session-id REPLACE_WITH_SESSION_ID --no-end
+scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 ```
 
 Use `--no-end` during frontend debugging so the page stays in the recording

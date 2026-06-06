@@ -9,6 +9,7 @@ import { TimelinePanel } from "./components/TimelinePanel";
 import { VisualOcrPanel } from "./components/VisualOcrPanel";
 import {
   ApiError,
+  deleteHistorySession,
   endSession,
   getHistorySession,
   listHistorySessions,
@@ -46,6 +47,7 @@ function App() {
   const [selectedHistoryId, setSelectedHistoryId] = useState<string | null>(null);
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [isHistoryOpening, setIsHistoryOpening] = useState(false);
+  const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
 
   // 保存当前课堂的 WebSocket 实例。
   //
@@ -274,6 +276,46 @@ function App() {
     }
   }
 
+  // 删除历史课堂：
+  // 1. 让用户确认，因为后端会删除 data/sessions/{session_id} 整个目录。
+  // 2. 调用 DELETE /sessions/{session_id}/history。
+  // 3. 从左侧历史列表移除该项。
+  // 4. 如果右侧正在展示这节历史课，同步清空 dashboard，避免继续展示已删除数据。
+  //
+  // 这个操作不影响正在录制的内存课堂；历史列表只包含已经结束保存的课堂。
+  async function handleDeleteHistory(sessionId: string) {
+    const target = historySessions.find((item) => item.session.session_id === sessionId);
+    const title = target?.session.title || sessionId;
+
+    if (!window.confirm(`确定删除历史课堂“${title}”及其本地数据吗？`)) {
+      return;
+    }
+
+    setDeletingHistoryId(sessionId);
+    setStatusMessage(null);
+
+    try {
+      await deleteHistorySession(sessionId);
+      setHistorySessions((current) =>
+        current.filter((item) => item.session.session_id !== sessionId),
+      );
+
+      if (selectedHistoryId === sessionId) {
+        setSelectedHistoryId(null);
+      }
+
+      dispatch({
+        type: "history.deleted",
+        sessionId,
+      });
+      setStatusMessage("历史课堂已删除，本地数据已清理。");
+    } catch (error) {
+      setStatusMessage(formatApiError(error, "删除历史课堂失败"));
+    } finally {
+      setDeletingHistoryId(null);
+    }
+  }
+
   return (
     <main className="app-shell">
       {/* 顶部区域只放课堂控制和产品身份，不承载实时数据。 */}
@@ -310,9 +352,11 @@ function App() {
           selectedSessionId={selectedHistoryId}
           isLoading={isHistoryLoading}
           isOpening={isHistoryOpening}
+          deletingSessionId={deletingHistoryId}
           isOpenDisabled={state.session?.status === "recording"}
           onRefresh={() => void loadHistorySessions()}
           onOpen={handleOpenHistory}
+          onDelete={handleDeleteHistory}
         />
 
         {/* 四个数据面板共享 App 状态，但组件内部不直接请求后端。 */}

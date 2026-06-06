@@ -136,6 +136,15 @@ class SessionHistoryListResponse(BaseModel):
     """按开始时间倒序排列的历史课堂摘要。"""
 
 
+class SessionDeleteResponse(BaseModel):
+    """删除历史课堂后的响应。"""
+
+    status: Literal["deleted"]
+    """删除状态。当前只有 deleted，便于前端做明确分支。"""
+    session_id: str
+    """被删除的历史课堂 ID。"""
+
+
 class SessionHistoryDetail(BaseModel):
     """单节历史课堂的完整读取结果。"""
 

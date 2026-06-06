@@ -1,5 +1,6 @@
 import type {
   LectureSession,
+  SessionDeleteResponse,
   SessionHistoryDetail,
   SessionHistoryListResponse,
 } from "../types/classroom";
@@ -121,4 +122,15 @@ export function listHistorySessions(): Promise<SessionHistoryListResponse> {
 // 再把 detail 交给 reducer 的 history.loaded 动作。
 export function getHistorySession(sessionId: string): Promise<SessionHistoryDetail> {
   return requestJson<SessionHistoryDetail>(`/sessions/${sessionId}/history`);
+}
+
+// 删除单节历史课堂以及它在本地 data/sessions/{session_id} 下的所有保存文件。
+//
+// 后端对应 DELETE /sessions/{session_id}/history。它只删除已落盘的历史档案，
+// 不会把正在内存中的课堂 session 恢复或终止。前端删除成功后应刷新历史列表；
+// 如果当前右侧正在查看这节历史课，还应清空 dashboard，避免显示已删除数据。
+export function deleteHistorySession(sessionId: string): Promise<SessionDeleteResponse> {
+  return requestJson<SessionDeleteResponse>(`/sessions/${sessionId}/history`, {
+    method: "DELETE",
+  });
 }

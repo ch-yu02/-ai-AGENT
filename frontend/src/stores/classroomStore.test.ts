@@ -547,6 +547,36 @@ describe("classroomReducer", () => {
     expect(state.graph.version).toBe(4);
     expect(state.graph.nodes[0].label).toBe("历史知识点");
   });
+
+  it("clears dashboard when the loaded history session is deleted", () => {
+    const loadedState = classroomReducer(initialDashboardState, {
+      type: "history.loaded",
+      detail: historyDetail("lec_history_current"),
+    });
+
+    const deletedState = classroomReducer(loadedState, {
+      type: "history.deleted",
+      sessionId: "lec_history_current",
+    });
+
+    expect(loadedState.session?.session_id).toBe("lec_history_current");
+    expect(loadedState.timeline).toHaveLength(1);
+    expect(deletedState).toEqual(initialDashboardState);
+  });
+
+  it("keeps dashboard when another history session is deleted", () => {
+    const loadedState = classroomReducer(initialDashboardState, {
+      type: "history.loaded",
+      detail: historyDetail("lec_history_current"),
+    });
+
+    const deletedState = classroomReducer(loadedState, {
+      type: "history.deleted",
+      sessionId: "lec_history_other",
+    });
+
+    expect(deletedState).toEqual(loadedState);
+  });
 });
 
 function eventReceivedMessage(data: Record<string, unknown>): WebSocketMessage {
@@ -573,5 +603,47 @@ function knowledgeContextUpdate(itemId: string): Record<string, unknown> {
     transcript_count: 0,
     visual_count: 0,
     knowledge_extraction_count: 1,
+  };
+}
+
+function historyDetail(sessionId: string) {
+  return {
+    session: {
+      session_id: sessionId,
+      title: "历史课堂",
+      course: "通信原理",
+      teacher: "张老师",
+      start_time: "2026-06-05T00:00:00+08:00",
+      end_time: "2026-06-05T01:00:00+08:00",
+      status: "ended" as const,
+      language: "zh-CN",
+      created_by: "student",
+      device_id: null,
+    },
+    transcript_markdown: "# Transcript",
+    timeline: [
+      {
+        item_id: "seg_history",
+        session_id: sessionId,
+        type: "transcript" as const,
+        ts: 1,
+        title: "历史字幕",
+        data: {
+          segment_id: "seg_history",
+          session_id: sessionId,
+          start_ts: 1,
+          end_ts: 2,
+          text: "历史字幕",
+        },
+      },
+    ],
+    knowledge_graph: {
+      session_id: sessionId,
+      version: 0,
+      root_nodes: [],
+      nodes: [],
+      edges: [],
+    },
+    storage_path: `data/sessions/${sessionId}`,
   };
 }

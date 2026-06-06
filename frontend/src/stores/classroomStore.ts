@@ -58,6 +58,12 @@ export type ClassroomAction =
       // 数据来自 WebSocket 实时流，还是来自本地历史文件快照。
       type: "history.loaded";
       detail: SessionHistoryDetail;
+    }
+  | {
+      // 删除历史课成功后通知 reducer。如果右侧正在展示被删课堂，就清空
+      // dashboard；否则保持当前看板不变。
+      type: "history.deleted";
+      sessionId: string;
     };
 
 export function classroomReducer(
@@ -95,6 +101,13 @@ export function classroomReducer(
       // 打开历史课时，旧实时课堂状态会被完整替换为历史快照。
       // 左侧历史列表的加载/选中状态不放在这里，仍由 App 管理。
       return applyHistoryDetail(action.detail);
+
+    case "history.deleted":
+      if (state.session?.session_id !== action.sessionId) {
+        return state;
+      }
+
+      return initialDashboardState;
   }
 }
 

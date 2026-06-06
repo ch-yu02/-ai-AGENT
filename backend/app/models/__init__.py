@@ -21,6 +21,7 @@ from .knowledge import (
 )
 from .session import (
     LectureSession,
+    SessionDeleteResponse,
     SessionHistoryDetail,
     SessionHistoryListResponse,
     SessionHistorySummary,
@@ -47,6 +48,7 @@ __all__ = [
     "LectureSession",
     "RealtimeEvent",
     "SessionHistoryDetail",
+    "SessionDeleteResponse",
     "SessionHistoryListResponse",
     "SessionHistorySummary",
     "SessionStatus",

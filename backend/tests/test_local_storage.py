@@ -182,6 +182,26 @@ class LocalStorageTest(unittest.TestCase):
         self.assertEqual(detail.knowledge_graph.edges[0].relation, "maps_to")
         self.assertTrue(detail.storage_path.endswith(self.session_id))
 
+    def test_delete_session_removes_saved_history_directory(self) -> None:
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        deleted = self.storage.delete_session(self.session_id)
+
+        self.assertTrue(deleted)
+        self.assertFalse(self.storage.session_exists(self.session_id))
+        self.assertEqual(self.storage.list_sessions(), [])
+
+    def test_delete_session_returns_false_for_missing_history(self) -> None:
+        self.assertFalse(self.storage.delete_session("lec_missing"))
+
+    def test_delete_session_rejects_paths_outside_storage_root(self) -> None:
+        with self.assertRaises(ValueError):
+            self.storage.delete_session("../outside")
+
 
 if __name__ == "__main__":
     unittest.main()

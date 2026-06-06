@@ -113,6 +113,12 @@ export type SessionHistoryListResponse = {
   sessions: SessionHistorySummary[];
 };
 
+// DELETE /sessions/{session_id}/history 的响应体。
+export type SessionDeleteResponse = {
+  status: "deleted";
+  session_id: string;
+};
+
 // GET /sessions/{session_id}/history 的响应体。
 export type SessionHistoryDetail = {
   // metadata.json
