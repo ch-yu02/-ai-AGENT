@@ -39,8 +39,12 @@ def build_query_service() -> RagQueryService:
     backend = os.getenv("RAG_QUERY_BACKEND", "lexical").strip().lower()
     if backend == "llamaindex":
         from .llama_query_service import LlamaIndexQueryService
+        from backend.app.storage import local_storage
 
-        return LlamaIndexQueryService(fallback=QueryService())
+        return LlamaIndexQueryService(
+            fallback=QueryService(),
+            index_dir_resolver=local_storage.session_index_dir,
+        )
 
     return QueryService()
 

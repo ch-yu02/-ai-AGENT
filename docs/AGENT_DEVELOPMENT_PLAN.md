@@ -469,7 +469,7 @@ LLM_MAX_RETRIES=1
 
 目标：提升历史课堂 Agent 的响应速度。
 
-当前先完成 Phase 6a：可选 LlamaIndex 单节课临时索引。
+当前已完成 Phase 6 的可选持久化索引主链路。
 
 启用方式：
 
@@ -491,12 +491,23 @@ llama-index
 
 - `backend/app/rag/llama_query_service.py`
   - 把内部 `RagDocument` 转换为 `llama_index.core.Document`。
-  - 使用 `VectorStoreIndex.from_documents()` 构建单节课内存索引。
+  - 查询时优先从 `data/sessions/{session_id}/llama_index/` 加载已有索引。
+  - 没有持久化索引时，使用 `VectorStoreIndex.from_documents()` 构建单节课临时索引。
+  - 结束课堂时可调用 `build_and_persist()` 构建并保存索引。
   - 从 `response.source_nodes` 映射回 `RagSourceRef`。
-  - 失败时回退 `QueryService`。
+  - 加载、构建或查询失败时回退 `QueryService`。
 - `backend/app/rag/service_factory.py`
   - 默认使用词法检索。
   - `RAG_QUERY_BACKEND=llamaindex` 时切换到 LlamaIndex 服务。
+  - LlamaIndex 服务通过 `LocalStorage.session_index_dir()` 获取安全索引目录。
+- `backend/app/storage/local_storage.py`
+  - 新增 `session_index_dir(session_id)`，统一管理
+    `data/sessions/{session_id}/llama_index/` 路径。
+- `backend/app/api/sessions.py`
+  - 结束课堂保存主文件和自动课后产物后，在启用 `RAG_QUERY_BACKEND=llamaindex`
+    时尝试持久化索引。
+  - 索引失败不会让结束课堂失败，只在 WebSocket `storage.rag_index` 中返回
+    warning/status。
 - `QaSkill` 通过工厂创建查询服务，不直接绑定某个 RAG 实现。
 
 后端功能：
@@ -508,7 +519,7 @@ data/sessions/{session_id}/llama_index/
 ```
 
 - 如果索引存在，直接加载。
-- 如果索引不存在，按需重建。
+- 如果索引不存在，按需临时构建；结束课堂路径会主动持久化。
 - 未来支持课堂中周期性增量索引。
 
 限制：

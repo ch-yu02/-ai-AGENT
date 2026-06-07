@@ -29,6 +29,8 @@
   knowledge_graph.json 写入磁盘
 """
 
+import os
+
 from fastapi import APIRouter, HTTPException, status
 
 from backend.app.core import (
@@ -40,6 +42,7 @@ from backend.app.core import (
     session_manager,
     websocket_manager,
 )
+from backend.app.rag import LlamaIndexQueryService, build_session_documents
 from backend.app.models import (
     LectureSession,
     SessionDeleteResponse,
@@ -232,6 +235,11 @@ async def end_session(session_id: str) -> LectureSession:
         context=context,
         knowledge_graph=knowledge_graph,
     )
+    rag_index = _build_rag_index_when_enabled(
+        session_id=session_id,
+        context=context,
+        knowledge_graph=knowledge_graph,
+    )
 
     await websocket_manager.broadcast(
         session_id,
@@ -250,6 +258,7 @@ async def end_session(session_id: str) -> LectureSession:
                         name: str(path)
                         for name, path in post_class_files.items()
                     },
+                    "rag_index": rag_index,
                 },
             },
         ),
@@ -289,3 +298,47 @@ def _generate_and_save_post_class_artifacts(
         if result.artifact is not None
     ]
     return local_storage.save_agent_artifacts(session_id, artifacts)
+
+
+def _build_rag_index_when_enabled(
+    session_id: str,
+    context,
+    knowledge_graph,
+) -> dict[str, object]:
+    """在启用 LlamaIndex 后为已结束课堂构建持久化索引。
+
+    这是 Phase 6 的结束课堂钩子。它只在 ``RAG_QUERY_BACKEND=llamaindex`` 且
+    LlamaIndex 可用时真正写入 ``data/sessions/{session_id}/llama_index``。
+
+    重要设计：
+    - 索引构建是课后增强能力，不是结束课堂的主链路。失败时返回 warning，
+      不抛出到 API 层，避免课堂 metadata/transcript/timeline/graph 已保存却
+      因索引失败让前端看到结束课堂失败。
+    - 目录仍通过 ``LocalStorage.session_index_dir()`` 计算，保持 storage
+      边界统一。
+    """
+    backend = os.getenv("RAG_QUERY_BACKEND", "lexical").strip().lower()
+    if backend != "llamaindex":
+        return {
+            "enabled": False,
+            "status": "skipped",
+        }
+
+    service = LlamaIndexQueryService(
+        index_dir_resolver=local_storage.session_index_dir,
+    )
+    documents = build_session_documents(context, knowledge_graph)
+    try:
+        index_dir = service.build_and_persist(documents, session_id=session_id)
+    except Exception as exc:  # noqa: BLE001 - 可选索引失败不应影响课堂结束。
+        return {
+            "enabled": True,
+            "status": "fallback",
+            "warning": f"LlamaIndex index was not persisted: {exc}",
+        }
+
+    return {
+        "enabled": True,
+        "status": "persisted",
+        "path": str(index_dir),
+    }

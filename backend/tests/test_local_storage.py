@@ -135,6 +135,18 @@ class LocalStorageTest(unittest.TestCase):
         self.assertTrue(self.storage.session_exists(self.session_id))
         self.assertEqual(metadata["title"], "通信原理第8讲")
 
+    def test_session_index_dir_stays_inside_session_directory(self) -> None:
+        index_dir = self.storage.session_index_dir(self.session_id)
+
+        self.assertEqual(
+            index_dir,
+            self.base_dir / self.session_id / "llama_index",
+        )
+
+    def test_session_index_dir_rejects_paths_outside_storage_root(self) -> None:
+        with self.assertRaises(ValueError):
+            self.storage.session_index_dir("../outside")
+
     def test_list_sessions_returns_history_summaries_newest_first(self) -> None:
         older_session = self._session().model_copy(
             update={

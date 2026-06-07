@@ -127,6 +127,19 @@ class LocalStorage:
         """
         return self.session_dir(session_id).exists()
 
+    def session_index_dir(self, session_id: str) -> Path:
+        """返回某节历史课堂的 LlamaIndex 持久化目录。
+
+        路径固定为：
+
+        ``data/sessions/{session_id}/llama_index``
+
+        这个方法只负责安全地计算路径，不主动创建目录。真正创建发生在 RAG
+        服务确认要持久化索引时。这样 storage 层仍然是路径边界的唯一来源，
+        API/RAG 层不需要手写 ``data/sessions`` 拼接逻辑。
+        """
+        return self._safe_session_dir(session_id) / "llama_index"
+
     def read_metadata(self, session_id: str) -> dict:
         """Read persisted metadata.json for history features.
 
