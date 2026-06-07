@@ -122,7 +122,10 @@ run_compile() {
     backend/app/main.py \
     backend/app/api/*.py \
     backend/app/core/*.py \
+    backend/app/llm/*.py \
     backend/app/models/*.py \
+    backend/app/rag/*.py \
+    backend/app/skills/*.py \
     backend/app/storage/*.py \
     backend/tests/*.py \
     backend/scripts/*.py

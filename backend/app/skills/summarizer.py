@@ -1,19 +1,29 @@
-"""规则版课堂总结技能。
+"""课堂总结技能。
 
-第一版总结技能不调用 LLM，也不做复杂抽象改写。它把课堂知识节点和前几条
-字幕整理成稳定提纲，优点是可测试、可追溯、无 API key 依赖。
-
-后续接入 Cloud LLM 时，可以保留 ``SummarizerSkill.run()`` 的输入输出形态，
-只替换方法内部的生成逻辑。
+默认情况下，本技能使用可测试、可追溯、无 API key 依赖的规则版总结。配置
+``LLM_API_KEY`` 后，会优先尝试云端模型生成更自然的总结；模型不可用、超时或
+返回结构不合规时自动回退规则版，避免影响课堂结束保存。
 """
 
+from backend.app.llm import CloudLLMError
 from backend.app.models import ClassroomContext, KnowledgeTree
 
+from .llm_support import (
+    JsonLLMClient,
+    build_default_llm_client,
+    classroom_brief,
+    source_refs_from_payload,
+)
 from .schemas import SkillArtifact, SkillResult, SkillSourceRef
 
 
 class SummarizerSkill:
     """生成课堂重点总结。"""
+
+    def __init__(self, llm_client: JsonLLMClient | None = None) -> None:
+        # 允许测试传 fake client；生产环境未显式传入时，按环境变量决定是否启用
+        # 云端模型。没有 LLM_API_KEY 时这里是 None，技能完全保持离线规则版。
+        self.llm_client = llm_client if llm_client is not None else build_default_llm_client()
 
     def run(
         self,
@@ -22,6 +32,29 @@ class SummarizerSkill:
         knowledge_graph: KnowledgeTree,
     ) -> SkillResult:
         """根据课堂上下文和知识图谱生成总结。
+
+        调用顺序：
+        1. 若已配置 LLM，先让模型基于课堂 brief 输出 JSON 总结。
+        2. 校验失败或调用失败时回退规则版，并把失败原因放进 warning。
+        3. 未配置 LLM 时直接使用规则版，保持本地 demo 不需要 API key。
+        """
+        if self.llm_client is not None:
+            try:
+                return self._run_llm(session_id, context, knowledge_graph)
+            except (CloudLLMError, KeyError, TypeError, ValueError) as exc:
+                fallback = self._run_rule_based(session_id, context, knowledge_graph)
+                fallback.warnings.append(f"LLM 总结失败，已回退规则版：{exc}")
+                return fallback
+
+        return self._run_rule_based(session_id, context, knowledge_graph)
+
+    def _run_rule_based(
+        self,
+        session_id: str,
+        context: ClassroomContext,
+        knowledge_graph: KnowledgeTree,
+    ) -> SkillResult:
+        """规则版总结实现。
 
         策略说明：
         - 优先列出知识图谱中的前几个知识节点，帮助用户看到概念清单。
@@ -66,6 +99,47 @@ class SummarizerSkill:
             ),
             source_refs=source_refs,
             warnings=warnings,
+        )
+
+    def _run_llm(
+        self,
+        session_id: str,
+        context: ClassroomContext,
+        knowledge_graph: KnowledgeTree,
+    ) -> SkillResult:
+        """使用云端模型生成结构化总结。"""
+        assert self.llm_client is not None
+        payload = self.llm_client.complete_json(
+            system_prompt=(
+                "你是课堂学习助手。只能基于用户提供的课堂资料总结，不要编造。"
+                "请输出 JSON object，字段为 summary_markdown 和 source_refs。"
+                "source_refs 是数组，元素包含 type(segment 或 knowledge_node) 和 id。"
+            ),
+            user_prompt=(
+                "请用中文生成一份简洁课堂总结，包含重点、知识脉络和复习建议。"
+                "输出必须是 JSON，不要 Markdown code fence。\n\n"
+                + classroom_brief(context, knowledge_graph)
+            ),
+            temperature=0.2,
+        )
+        summary = str(payload["summary_markdown"]).strip()
+        if not summary:
+            raise CloudLLMError("LLM summary is empty")
+
+        source_refs = source_refs_from_payload(
+            payload.get("source_refs", []),
+            context,
+            knowledge_graph,
+        )
+        return SkillResult(
+            answer=summary,
+            artifact=SkillArtifact(
+                type="summary",
+                title="课堂总结",
+                content=summary,
+            ),
+            source_refs=source_refs,
+            warnings=[],
         )
 
 

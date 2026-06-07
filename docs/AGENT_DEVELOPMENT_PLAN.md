@@ -418,6 +418,7 @@ POST /agent/chat
 后端功能：
 
 - 新增 `backend/app/llm/cloud_client.py`。
+- 新增 `backend/app/llm/settings.py`。
 - 支持环境变量配置：
 
 ```text
@@ -426,6 +427,7 @@ LLM_API_KEY=...
 LLM_MODEL=...
 LLM_BASE_URL=...
 LLM_TIMEOUT_SECONDS=30
+LLM_MAX_RETRIES=1
 ```
 
 - 支持：
@@ -434,6 +436,18 @@ LLM_TIMEOUT_SECONDS=30
   - 错误包装
   - structured JSON 输出校验
   - fallback 文案
+
+当前实现状态：
+
+- `CloudLLMClient` 使用 OpenAI-compatible `/chat/completions` 协议，默认支持
+  DeepSeek，也可通过 `LLM_BASE_URL` 接入其他兼容供应商。
+- 没有 `LLM_API_KEY` 时，系统不会创建云端客户端，summary/todos/quiz 继续走
+  本地规则版。
+- `SummarizerSkill`、`TodoDetectiveSkill`、`QuizMasterSkill` 已支持可选
+  LLM-backed 输出；模型失败、超时、返回非 JSON 或结构不符合预期时会回退规则版。
+- `QuizMasterSkill` 仍只在用户主动请求出题时运行；结束课堂只自动生成
+  summary/todos，不自动写 `quiz.json`。
+- 单元测试使用 fake client，不访问真实云端模型。
 
 安全要求：
 
