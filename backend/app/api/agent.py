@@ -15,7 +15,10 @@ from backend.app.agent import (
     AgentChatRequest,
     AgentChatResponse,
     AgentSessionNotFoundError,
+    GlobalSearchRequest,
+    GlobalSearchResponse,
     classroom_agent,
+    global_search_service,
 )
 
 
@@ -34,3 +37,14 @@ async def chat(request: AgentChatRequest) -> AgentChatResponse:
         return classroom_agent.chat(request)
     except AgentSessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
+
+
+@router.post("/search", response_model=GlobalSearchResponse)
+async def search(request: GlobalSearchRequest) -> GlobalSearchResponse:
+    """跨已保存历史课堂搜索课堂资料。
+
+    这个接口是 Phase 7 的第一版“长期记忆”入口。它只读取本地已保存历史课堂，
+    不搜索正在录制但尚未结束保存的内存课堂。这样用户得到的结果都能对应到
+    ``data/sessions/{session_id}`` 中稳定存在的课后档案。
+    """
+    return global_search_service.search(request)

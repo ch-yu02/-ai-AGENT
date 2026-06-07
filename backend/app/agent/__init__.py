@@ -9,12 +9,17 @@ from backend.app.core import context_manager, knowledge_graph_manager
 from backend.app.storage import local_storage
 
 from .classroom_agent import AgentSessionNotFoundError, ClassroomAgent
+from .global_search import GlobalSearchService
 from .intent_router import IntentRouter
 from .schemas import (
     AgentArtifact,
     AgentChatRequest,
     AgentChatResponse,
     AgentSourceRef,
+    GlobalSearchHit,
+    GlobalSearchRequest,
+    GlobalSearchResponse,
+    GlobalSearchSourceRef,
 )
 
 
@@ -29,6 +34,13 @@ classroom_agent = ClassroomAgent(
 使用这里的全局实例，读取当前应用正在维护的课堂内存和本地历史文件。
 """
 
+global_search_service = GlobalSearchService(storage=local_storage)
+"""跨课堂历史搜索服务实例。
+
+它只读取 ``LocalStorage`` 中已经保存的历史课堂，不参与实时课堂内存状态。
+后续如果引入全局向量索引，可以优先替换这个服务的内部实现。
+"""
+
 
 __all__ = [
     "AgentArtifact",
@@ -37,6 +49,12 @@ __all__ = [
     "AgentSessionNotFoundError",
     "AgentSourceRef",
     "ClassroomAgent",
+    "GlobalSearchHit",
+    "GlobalSearchRequest",
+    "GlobalSearchResponse",
+    "GlobalSearchService",
+    "GlobalSearchSourceRef",
     "IntentRouter",
     "classroom_agent",
+    "global_search_service",
 ]

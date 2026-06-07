@@ -37,6 +37,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from pydantic import ValidationError
+
 from backend.app.models import (
     ClassroomContext,
     KnowledgeTree,
@@ -159,7 +161,7 @@ class LocalStorage:
         目录过滤策略：
           - base_dir 不存在：说明还没有任何已保存课堂，返回空列表。
           - 非目录条目：跳过，例如 .gitkeep。
-          - 缺少 metadata.json：跳过，因为没有可展示的课堂元信息。
+          - 缺少 metadata.json 或 metadata 格式损坏：跳过，因为没有可展示的课堂元信息。
           - 缺少 timeline.json：event_count 记为 0，仍允许展示摘要。
         """
         summaries: list[SessionHistorySummary] = []
@@ -181,7 +183,12 @@ class LocalStorage:
 
             # 读取时重新通过 Pydantic 校验，保证历史 API 输出仍遵守当前
             # 后端模型契约。旧文件若格式不兼容，会尽早暴露。
-            session = LectureSession.model_validate(self._read_json(metadata_path))
+            try:
+                session = LectureSession.model_validate(self._read_json(metadata_path))
+            except (ValueError, ValidationError):
+                # 列表页应尽量宽容。开发过程中可能留下半写入或手动修改坏的
+                # metadata.json；跳过坏目录可以保证其他正常历史课堂仍可展示。
+                continue
             event_count = 0
             if timeline_path.exists():
                 event_count = len(self._read_json_list(timeline_path))

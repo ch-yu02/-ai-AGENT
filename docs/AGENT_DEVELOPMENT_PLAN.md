@@ -536,7 +536,25 @@ data/sessions/{session_id}/llama_index/
 
 目标：支持跨多个 session 的学习助手能力。
 
-功能：
+当前已完成 Phase 7 第一版：本地历史课堂跨 session 搜索。
+
+已实现：
+
+- `POST /agent/search`
+  - 请求字段：`query`、可选 `course`、可选 `limit`。
+  - 只搜索已保存到 `data/sessions` 的历史课堂。
+  - 逐节读取历史详情，转换为 RAG 文档后做跨 session 词法评分。
+  - 返回 `answer`、`hits`、`warnings`。
+  - 每个 hit 都包含 `session_id`、`title`、`course`、`score` 和 `source_ref`。
+- `backend/app/agent/global_search.py`
+  - 负责历史列表读取、课程过滤、坏历史目录跳过、跨课堂排序。
+  - 当前使用确定性本地检索，便于测试；未来可替换为全局 LlamaIndex 索引。
+- `frontend/src/components/GlobalSearchPanel.tsx`
+  - 提供全局搜索入口。
+  - 支持课程过滤。
+  - 展示命中的课堂标题、课程、来源类型、来源 ID、课堂内时间和分数。
+
+后续功能：
 
 - 全局索引：
 
@@ -554,14 +572,15 @@ data/indexes/global/
 
 前端功能：
 
-- 全局 Agent 入口。
-- 按课程或日期过滤。
-- 来源引用跳转到对应历史课堂。
+- 全局 Agent 入口：已完成第一版。
+- 按课程过滤：已完成第一版。
+- 按日期过滤：待实现。
+- 来源引用跳转到对应历史课堂：待实现。
 
 验收：
 
-- 可以跨 session 检索。
-- 回答中能标注来自哪节课。
+- 可以跨 session 检索：已完成。
+- 回答中能标注来自哪节课：已完成。
 
 ## 7. 数据转换设计
 

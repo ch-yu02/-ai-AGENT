@@ -45,6 +45,38 @@ export type AgentChatResponse = {
   warnings: string[];
 };
 
+export type GlobalSearchRequest = {
+  // 跨课堂搜索关键词或自然语言问题。
+  query: string;
+  // 可选课程过滤；为空时搜索全部历史课堂。
+  course?: string | null;
+  // 最多返回多少条命中。
+  limit?: number;
+};
+
+export type GlobalSearchSourceRef = {
+  // 允许 knowledge_edge 等全局 RAG 文档类型，所以这里保持 string。
+  type: string;
+  id: string;
+  ts?: number | null;
+  text: string;
+};
+
+export type GlobalSearchHit = {
+  session_id: string;
+  title: string;
+  course?: string | null;
+  score: number;
+  source_ref: GlobalSearchSourceRef;
+};
+
+export type GlobalSearchResponse = {
+  query: string;
+  answer: string;
+  hits: GlobalSearchHit[];
+  warnings: string[];
+};
+
 // AgentPanel 内部消息模型。
 //
 // 目前 Agent 聊天记录只存在组件状态里，不进入 classroomReducer。原因是它不参与

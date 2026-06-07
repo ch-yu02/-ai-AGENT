@@ -1,5 +1,10 @@
 import { requestJson } from "./api";
-import type { AgentChatRequest, AgentChatResponse } from "../types/agent";
+import type {
+  AgentChatRequest,
+  AgentChatResponse,
+  GlobalSearchRequest,
+  GlobalSearchResponse,
+} from "../types/agent";
 
 // Agent HTTP 客户端。
 //
@@ -11,6 +16,18 @@ export function chatWithAgent(request: AgentChatRequest): Promise<AgentChatRespo
     body: JSON.stringify({
       // 默认自动路由，允许调用方通过 request.mode 覆盖为 summary/todos/quiz/qa。
       mode: "auto",
+      ...request,
+    }),
+  });
+}
+
+export function searchAcrossClassrooms(
+  request: GlobalSearchRequest,
+): Promise<GlobalSearchResponse> {
+  return requestJson<GlobalSearchResponse>("/agent/search", {
+    method: "POST",
+    body: JSON.stringify({
+      limit: 8,
       ...request,
     }),
   });

@@ -2,6 +2,7 @@ import { useEffect, useReducer, useRef, useState } from "react";
 
 import { AgentPanel } from "./components/AgentPanel";
 import { ClassroomControls } from "./components/ClassroomControls";
+import { GlobalSearchPanel } from "./components/GlobalSearchPanel";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { KnowledgeGraphPanel } from "./components/KnowledgeGraphPanel";
 import { PostClassArtifactsPanel } from "./components/PostClassArtifactsPanel";
@@ -369,6 +370,7 @@ function App() {
           <KnowledgeGraphPanel graph={state.graph} />
           <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
           <AgentPanel session={state.session} />
+          <GlobalSearchPanel />
         </section>
       </section>
     </main>

@@ -93,11 +93,75 @@ class AgentChatResponse(BaseModel):
     """非致命提示，例如数据不足、仍在录制、规则版候选需要人工确认。"""
 
 
+class GlobalSearchRequest(BaseModel):
+    """``POST /agent/search`` 的跨课堂搜索请求。
+
+    Phase 7 第一版只搜索已保存到 ``data/sessions`` 的历史课堂。正在录制但尚未
+    结束保存的课堂不在搜索范围内，避免全局搜索读到不完整或尚未授权落盘的数据。
+    """
+
+    query: str
+    """用户问题或关键词，例如“哪节课讲过采样定理”。"""
+    course: str | None = None
+    """可选课程过滤。为空时搜索全部历史课堂。"""
+    limit: int = Field(default=8, ge=1, le=20)
+    """最多返回多少条来源命中。"""
+
+
+class GlobalSearchSourceRef(BaseModel):
+    """跨课堂搜索中的来源引用。
+
+    与单课堂 ``AgentSourceRef`` 相比，这里允许 ``knowledge_edge`` 等 RAG 文档
+    类型，并且每个引用都会被外层 hit 绑定到具体 session。
+    """
+
+    type: str
+    """来源类型，例如 segment / visual / knowledge_node / knowledge_edge。"""
+    id: str
+    """来源对象 ID。"""
+    ts: float | None = None
+    """课堂内时间，单位秒。"""
+    text: str
+    """命中文档正文摘要。"""
+
+
+class GlobalSearchHit(BaseModel):
+    """一次跨课堂搜索命中。"""
+
+    session_id: str
+    """命中来源所属课堂。"""
+    title: str
+    """课堂标题。"""
+    course: str | None = None
+    """课程名。"""
+    score: int
+    """词法相关性分数，用于排序和调试。"""
+    source_ref: GlobalSearchSourceRef
+    """具体命中的课堂资料来源。"""
+
+
+class GlobalSearchResponse(BaseModel):
+    """``POST /agent/search`` 的响应。"""
+
+    query: str
+    """原始查询。"""
+    answer: str
+    """可直接展示的跨课堂搜索摘要。"""
+    hits: list[GlobalSearchHit] = Field(default_factory=list)
+    """按相关性排序的命中列表。"""
+    warnings: list[str] = Field(default_factory=list)
+    """非致命提示，例如没有历史课堂或没有找到依据。"""
+
+
 __all__ = [
     "AgentArtifact",
     "AgentChatRequest",
     "AgentChatResponse",
     "AgentIntent",
     "AgentSourceRef",
+    "GlobalSearchHit",
+    "GlobalSearchRequest",
+    "GlobalSearchResponse",
+    "GlobalSearchSourceRef",
     "ResolvedAgentIntent",
 ]
