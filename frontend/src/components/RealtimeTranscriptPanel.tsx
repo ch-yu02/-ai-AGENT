@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 import { EmptyState } from "./EmptyState";
+import type { GlobalSearchSourceRef } from "../types/agent";
 import type { TranscriptSegment } from "../types/classroom";
 import { formatClassTime } from "../utils/time";
 
@@ -11,13 +12,18 @@ import { formatClassTime } from "../utils/time";
 // 解析出 TranscriptSegment，并追加到 transcript 数组。
 type RealtimeTranscriptPanelProps = {
   transcript: TranscriptSegment[];
+  focusedSource?: GlobalSearchSourceRef | null;
 };
 
-export function RealtimeTranscriptPanel({ transcript }: RealtimeTranscriptPanelProps) {
+export function RealtimeTranscriptPanel({
+  transcript,
+  focusedSource,
+}: RealtimeTranscriptPanelProps) {
   // 字幕是“实时流”，用户最关心最新一句。
   // listRef 指向可滚动容器；每当 transcript.length 增长时，把滚动条推到底部。
   // 这里只依赖 length，而不是整个 transcript 数组，避免内容更新时频繁打断用户滚动。
   const listRef = useRef<HTMLDivElement | null>(null);
+  const itemRefs = useRef<Record<string, HTMLElement | null>>({});
 
   useEffect(() => {
     const list = listRef.current;
@@ -28,6 +34,17 @@ export function RealtimeTranscriptPanel({ transcript }: RealtimeTranscriptPanelP
 
     list.scrollTop = list.scrollHeight;
   }, [transcript.length]);
+
+  useEffect(() => {
+    if (focusedSource?.type !== "segment") {
+      return;
+    }
+
+    itemRefs.current[focusedSource.id]?.scrollIntoView({
+      block: "center",
+      behavior: "smooth",
+    });
+  }, [focusedSource]);
 
   return (
     <section className="panel transcript-panel" aria-labelledby="transcript-title">
@@ -44,7 +61,17 @@ export function RealtimeTranscriptPanel({ transcript }: RealtimeTranscriptPanelP
         <div className="scroll-list transcript-list" ref={listRef}>
           {transcript.map((segment) => (
             // segment_id 由 ASR/mock sender 提供；缺省时后端 ContextManager 会补齐。
-            <article className="transcript-item" key={segment.segment_id}>
+            <article
+              className={`transcript-item ${
+                focusedSource?.type === "segment" && focusedSource.id === segment.segment_id
+                  ? "focused-source"
+                  : ""
+              }`}
+              key={segment.segment_id}
+              ref={(element) => {
+                itemRefs.current[segment.segment_id] = element;
+              }}
+            >
               <div className="item-meta">
                 <span>
                   {formatClassTime(segment.start_ts)} - {formatClassTime(segment.end_ts)}

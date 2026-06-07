@@ -20,6 +20,7 @@ import {
 } from "./services/api";
 import { connectClassroomSocket } from "./services/websocket";
 import { classroomReducer, initialDashboardState } from "./stores/classroomStore";
+import type { GlobalSearchSourceRef } from "./types/agent";
 import type { SessionHistorySummary, WebSocketMessage } from "./types/classroom";
 
 function App() {
@@ -51,6 +52,10 @@ function App() {
   const [isHistoryLoading, setIsHistoryLoading] = useState(false);
   const [isHistoryOpening, setIsHistoryOpening] = useState(false);
   const [deletingHistoryId, setDeletingHistoryId] = useState<string | null>(null);
+  // 跨课堂搜索命中的来源。打开历史课堂后，字幕/图片/时间线面板会用它高亮并
+  // 滚动到对应条目。它是纯 UI 状态，不进入 classroomReducer，避免和实时数据
+  // 合并逻辑混在一起。
+  const [focusedSource, setFocusedSource] = useState<GlobalSearchSourceRef | null>(null);
 
   // 保存当前课堂的 WebSocket 实例。
   //
@@ -200,6 +205,7 @@ function App() {
       // 新课堂开始后，右侧看板已经切到实时课堂；清空历史选中态，避免左侧
       // 仍高亮某节历史课，让用户误以为当前显示的是历史内容。
       setSelectedHistoryId(null);
+      setFocusedSource(null);
       setStatusMessage("课堂已开始，正在连接 WebSocket。");
       connectWebSocket(session.session_id);
     } catch (error) {
@@ -251,7 +257,10 @@ function App() {
   // 录制中的课堂不允许切历史，因为那会清空当前实时看板并关闭 socket。
   // 后续如果要支持“边录制边看历史”，应引入独立路由或双看板，而不是复用
   // 当前单看板状态。
-  async function handleOpenHistory(sessionId: string) {
+  async function handleOpenHistory(
+    sessionId: string,
+    focusedSourceRef: GlobalSearchSourceRef | null = null,
+  ) {
     if (state.session?.status === "recording") {
       setStatusMessage("当前课堂正在录制，结束后再查看历史课程。");
       return;
@@ -271,7 +280,10 @@ function App() {
         detail,
       });
       setSelectedHistoryId(sessionId);
-      setStatusMessage("历史课程已加载。");
+      setFocusedSource(focusedSourceRef);
+      setStatusMessage(
+        focusedSourceRef ? "历史课程已加载，已定位到搜索命中来源。" : "历史课程已加载。",
+      );
     } catch (error) {
       setStatusMessage(formatApiError(error, "加载历史课程失败"));
     } finally {
@@ -305,6 +317,7 @@ function App() {
 
       if (selectedHistoryId === sessionId) {
         setSelectedHistoryId(null);
+        setFocusedSource(null);
       }
 
       dispatch({
@@ -364,13 +377,19 @@ function App() {
 
         {/* 四个数据面板共享 App 状态，但组件内部不直接请求后端。 */}
         <section className="dashboard-grid" aria-label="课堂看板内容">
-          <RealtimeTranscriptPanel transcript={state.transcript} />
-          <TimelinePanel timeline={state.timeline} />
-          <VisualOcrPanel visuals={state.visuals} />
+          <RealtimeTranscriptPanel
+            focusedSource={focusedSource}
+            transcript={state.transcript}
+          />
+          <TimelinePanel focusedSource={focusedSource} timeline={state.timeline} />
+          <VisualOcrPanel focusedSource={focusedSource} visuals={state.visuals} />
           <KnowledgeGraphPanel graph={state.graph} />
           <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
           <AgentPanel session={state.session} />
-          <GlobalSearchPanel />
+          <GlobalSearchPanel
+            isOpenDisabled={state.session?.status === "recording"}
+            onOpenSession={(sessionId, sourceRef) => void handleOpenHistory(sessionId, sourceRef)}
+          />
         </section>
       </section>
     </main>
