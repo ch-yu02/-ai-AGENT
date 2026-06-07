@@ -469,6 +469,36 @@ LLM_MAX_RETRIES=1
 
 目标：提升历史课堂 Agent 的响应速度。
 
+当前先完成 Phase 6a：可选 LlamaIndex 单节课临时索引。
+
+启用方式：
+
+```text
+RAG_QUERY_BACKEND=llamaindex
+```
+
+可选依赖：
+
+```text
+llama-index
+```
+
+如果使用 OpenAI-compatible LLM 或 embedding provider，再按实际供应商安装
+对应 LlamaIndex 扩展。当前代码不把 `llama-index` 作为硬依赖；未安装或查询
+失败时会回退到本地词法检索，并在 warning 中说明。
+
+已实现：
+
+- `backend/app/rag/llama_query_service.py`
+  - 把内部 `RagDocument` 转换为 `llama_index.core.Document`。
+  - 使用 `VectorStoreIndex.from_documents()` 构建单节课内存索引。
+  - 从 `response.source_nodes` 映射回 `RagSourceRef`。
+  - 失败时回退 `QueryService`。
+- `backend/app/rag/service_factory.py`
+  - 默认使用词法检索。
+  - `RAG_QUERY_BACKEND=llamaindex` 时切换到 LlamaIndex 服务。
+- `QaSkill` 通过工厂创建查询服务，不直接绑定某个 RAG 实现。
+
 后端功能：
 
 - 结束课堂时构建索引：
