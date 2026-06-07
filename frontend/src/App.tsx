@@ -4,6 +4,7 @@ import { AgentPanel } from "./components/AgentPanel";
 import { ClassroomControls } from "./components/ClassroomControls";
 import { HistoryPanel } from "./components/HistoryPanel";
 import { KnowledgeGraphPanel } from "./components/KnowledgeGraphPanel";
+import { PostClassArtifactsPanel } from "./components/PostClassArtifactsPanel";
 import { RealtimeTranscriptPanel } from "./components/RealtimeTranscriptPanel";
 import { StatusStrip } from "./components/StatusStrip";
 import { TimelinePanel } from "./components/TimelinePanel";
@@ -366,6 +367,7 @@ function App() {
           <TimelinePanel timeline={state.timeline} />
           <VisualOcrPanel visuals={state.visuals} />
           <KnowledgeGraphPanel graph={state.graph} />
+          <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
           <AgentPanel session={state.session} />
         </section>
       </section>

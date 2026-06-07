@@ -181,6 +181,105 @@ class LocalStorageTest(unittest.TestCase):
         self.assertEqual(detail.timeline[0].item_id, "seg_001")
         self.assertEqual(detail.knowledge_graph.edges[0].relation, "maps_to")
         self.assertTrue(detail.storage_path.endswith(self.session_id))
+        self.assertIsNone(detail.post_class_artifacts.summary_markdown)
+        self.assertEqual(detail.post_class_artifacts.todos, [])
+
+    def test_save_agent_artifacts_writes_post_class_outputs(self) -> None:
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        files = self.storage.save_agent_artifacts(
+            self.session_id,
+            [
+                {
+                    "type": "summary",
+                    "title": "课堂总结",
+                    "content": "这节课讲了傅里叶变换。",
+                },
+                {
+                    "type": "todos",
+                    "title": "待办候选",
+                    "content": [
+                        {
+                            "title": "完成第三题",
+                            "type": "candidate",
+                            "due_time": None,
+                            "confidence": 0.6,
+                        }
+                    ],
+                },
+                {
+                    "type": "quiz",
+                    "title": "自测题",
+                    "content": [
+                        {
+                            "question": "傅里叶变换有什么作用？",
+                            "type": "short_answer",
+                            "answer": "转换到频域。",
+                        }
+                    ],
+                },
+            ],
+        )
+
+        self.assertIn("summary", files)
+        self.assertIn("todos", files)
+        self.assertIn("quiz", files)
+        self.assertIn("agent_artifacts", files)
+        self.assertIn("傅里叶变换", files["summary"].read_text(encoding="utf-8"))
+        todos = json.loads(files["todos"].read_text(encoding="utf-8"))
+        quiz = json.loads(files["quiz"].read_text(encoding="utf-8"))
+        self.assertEqual(todos[0]["title"], "完成第三题")
+        self.assertEqual(quiz[0]["type"], "short_answer")
+
+        detail = self.storage.read_session(self.session_id)
+        self.assertIn("傅里叶变换", detail.post_class_artifacts.summary_markdown)
+        self.assertEqual(detail.post_class_artifacts.todos[0]["title"], "完成第三题")
+        self.assertEqual(detail.post_class_artifacts.quiz[0]["type"], "short_answer")
+
+    def test_save_agent_artifacts_merges_snapshot_by_artifact_type(self) -> None:
+        """先自动保存 summary/todos，再主动保存 quiz 时，索引应保留三类产物。"""
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        self.storage.save_agent_artifacts(
+            self.session_id,
+            [
+                {
+                    "type": "summary",
+                    "title": "课堂总结",
+                    "content": "自动总结。",
+                },
+                {
+                    "type": "todos",
+                    "title": "待办候选",
+                    "content": [{"title": "完成第三题", "confidence": 0.6}],
+                },
+            ],
+        )
+        self.storage.save_agent_artifacts(
+            self.session_id,
+            [
+                {
+                    "type": "quiz",
+                    "title": "自测题",
+                    "content": [{"question": "什么是傅里叶变换？"}],
+                }
+            ],
+        )
+
+        detail = self.storage.read_session(self.session_id)
+        artifact_types = [
+            artifact["type"]
+            for artifact in detail.post_class_artifacts.agent_artifacts
+        ]
+        self.assertEqual(artifact_types, ["summary", "todos", "quiz"])
 
     def test_delete_session_removes_saved_history_directory(self) -> None:
         self.storage.save_session(

@@ -132,6 +132,20 @@ export type SessionHistoryDetail = {
   knowledge_graph: KnowledgeTree;
   // 本地 session 目录路径，用于调试和未来打开本地资源。
   storage_path: string;
+  // 课后产物。结束课堂时后端会自动生成；旧历史课堂可能为空。
+  post_class_artifacts?: SessionPostClassArtifacts;
+};
+
+// 历史课堂目录中的课后产物。
+export type SessionPostClassArtifacts = {
+  // summary.md 的内容。
+  summary_markdown?: string | null;
+  // todos.json 的内容。
+  todos: Array<Record<string, unknown>>;
+  // quiz.json 的内容。
+  quiz: Array<Record<string, unknown>>;
+  // agent_artifacts.json 的完整 artifact 快照。
+  agent_artifacts: Array<Record<string, unknown>>;
 };
 
 // 单条图谱增量操作。
@@ -181,4 +195,5 @@ export type ClassroomDashboardState = {
   timeline: TimelineItem[];
   visuals: ImageCapture[];
   graph: KnowledgeGraphView;
+  postClassArtifacts: SessionPostClassArtifacts;
 };

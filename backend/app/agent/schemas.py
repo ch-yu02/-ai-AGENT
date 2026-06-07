@@ -1,7 +1,7 @@
-"""Pydantic contracts for the classroom Agent API.
+"""课堂 Agent API 的 Pydantic 契约模型。
 
 这些模型是 ``POST /agent/chat`` 的稳定边界。Agent 内部第一版使用规则
-实现，后续可能切换为 LlamaIndex RAG、Cloud LLM 或结构化 Skill，但前端
+实现，后续可能切换为 LlamaIndex RAG、Cloud LLM 或结构化技能，但前端
 仍应只依赖这里定义的请求/响应字段。
 
 设计原则：
@@ -28,15 +28,15 @@ SourceRefType = Literal["segment", "visual", "knowledge_node", "timeline"]
 
 
 class AgentChatRequest(BaseModel):
-    """Request body for POST /agent/chat.
+    """``POST /agent/chat`` 的请求体。
 
     ``mode`` 默认为 ``auto``，用于普通自然语言入口。快捷按钮或后续结构化
-    Skill 页面可以显式传 ``summary`` / ``todos`` / ``quiz``，从而绕过
+    技能页面可以显式传 ``summary`` / ``todos`` / ``quiz``，从而绕过
     关键词路由，直接调用目标能力。
     """
 
     session_id: str
-    """要查询的课堂 ID。可以是内存中的 recording session，也可以是已保存历史课堂。"""
+    """要查询的课堂 ID。可以是内存中的录制中课堂，也可以是已保存历史课堂。"""
     prompt: str
     """用户自然语言输入。第一版只处理课堂数据相关问题。"""
     mode: AgentIntent = "auto"
@@ -44,11 +44,11 @@ class AgentChatRequest(BaseModel):
 
 
 class AgentArtifact(BaseModel):
-    """Structured output produced by an Agent skill.
+    """Agent 技能生成的结构化产物。
 
-    这里故意保持 ``content`` 比较宽松：规则版 todos/quiz 会返回 JSON-like
-    列表，summary 会返回 Markdown/纯文本。等 Phase 4 结构化 Skills 稳定后，
-    可以再把不同 artifact 拆成更强类型的模型。
+    这里故意保持 ``content`` 比较宽松：规则版 todos/quiz 会返回类 JSON
+    列表，summary 会返回 Markdown/纯文本。等 Phase 4 结构化技能稳定后，
+    可以再把不同产物拆成更强类型的模型。
     """
 
     type: str
@@ -60,7 +60,7 @@ class AgentArtifact(BaseModel):
 
 
 class AgentSourceRef(BaseModel):
-    """A classroom-grounded source reference shown with an Agent answer.
+    """随 Agent 回答一起展示的课堂依据引用。
 
     Agent 第一版不会生成“看似聪明但没有依据”的答案。所有能匹配到课堂素材的
     回答都会尽量携带 source_refs，供前端展示和未来跳转到历史回放位置。
@@ -77,7 +77,7 @@ class AgentSourceRef(BaseModel):
 
 
 class AgentChatResponse(BaseModel):
-    """Response body for POST /agent/chat."""
+    """``POST /agent/chat`` 的响应体。"""
 
     session_id: str
     """本次回答所属课堂 ID。"""

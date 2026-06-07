@@ -34,6 +34,12 @@ export const initialDashboardState: ClassroomDashboardState = {
     edges: [],
     version: 0,
   },
+  postClassArtifacts: {
+    summary_markdown: null,
+    todos: [],
+    quiz: [],
+    agent_artifacts: [],
+  },
 };
 
 export type ClassroomAction =
@@ -133,6 +139,16 @@ function applyHistoryDetail(detail: SessionHistoryDetail): ClassroomDashboardSta
       edges: detail.knowledge_graph.edges,
       version: detail.knowledge_graph.version,
     },
+    postClassArtifacts: detail.post_class_artifacts ?? emptyPostClassArtifacts(),
+  };
+}
+
+function emptyPostClassArtifacts() {
+  return {
+    summary_markdown: null,
+    todos: [],
+    quiz: [],
+    agent_artifacts: [],
   };
 }
 

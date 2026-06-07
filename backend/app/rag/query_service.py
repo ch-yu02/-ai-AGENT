@@ -1,12 +1,11 @@
-"""Local retrieval service for classroom RAG documents.
+"""课堂 RAG 文档的本地检索服务。
 
-This module is a dependency-free stepping stone toward LlamaIndex. It exposes a
-query-oriented interface that returns an answer and source references, while the
-implementation is currently a deterministic lexical search over ``RagDocument``
-objects.
+本模块是接入 LlamaIndex 前的无依赖过渡层。它对外暴露“输入 prompt 和文档，
+返回回答与来源引用”的查询接口；内部目前使用确定性的关键词检索，避免在
+MVP 阶段引入向量库、本地 embedding 或云端模型。
 
-When LlamaIndex is introduced, keep the public ``QueryService.query()`` shape
-and replace the internals with index construction + query engine calls.
+后续接入 LlamaIndex 时，尽量保持 ``QueryService.query()`` 的入参和返回
+结构不变，只把内部实现替换为索引构建、query engine 调用和引用映射。
 """
 
 import re
@@ -17,7 +16,12 @@ from .documents import RagDocument
 
 @dataclass(frozen=True)
 class RagSourceRef:
-    """Provider-neutral source reference returned by the retrieval layer."""
+    """检索层返回的轻量来源引用，不绑定 Agent API schema。
+
+    RAG 层不直接依赖 ``backend.app.agent.schemas.AgentSourceRef``，是为了避免
+    Agent 层和 RAG 层互相 import 形成环。Agent 会在边界处把这个对象转换成
+    对外 API 响应里的 ``AgentSourceRef``。
+    """
 
     type: str
     id: str
@@ -27,7 +31,7 @@ class RagSourceRef:
 
 @dataclass(frozen=True)
 class QueryResult:
-    """Result returned by QueryService."""
+    """QueryService 的查询结果。"""
 
     answer: str
     source_refs: list[RagSourceRef]
@@ -35,7 +39,13 @@ class QueryResult:
 
 
 class QueryService:
-    """Query classroom documents with a deterministic lexical retriever."""
+    """使用确定性词法检索查询课堂文档。
+
+    这个类现在不是完整 RAG 引擎，但接口已经按 RAG 查询服务设计：
+    - ``prompt`` 是用户问题。
+    - ``documents`` 是某节课的检索语料。
+    - 返回 ``answer``、``source_refs`` 和 ``warnings``。
+    """
 
     def query(
         self,
@@ -43,7 +53,11 @@ class QueryService:
         documents: list[RagDocument],
         limit: int = 5,
     ) -> QueryResult:
-        """Search documents and build a classroom-grounded answer."""
+        """检索文档并构造带来源的课堂回答。
+
+        当前排序规则非常朴素：文档命中的关键词总长度越大，排序越靠前。
+        这种方式可测试、可解释；真正的语义相似度排序留给后续向量索引实现。
+        """
         keywords = self._keywords(prompt)
         scored: list[tuple[int, RagDocument]] = []
 
@@ -59,6 +73,8 @@ class QueryService:
         refs = [self._source_ref(document) for document in ranked[:limit]]
 
         if not refs:
+            # 找不到来源时明确返回“没有依据”，而不是编造答案。这是课堂 Agent
+            # 和开放域聊天机器人的关键边界。
             return QueryResult(
                 answer="没有在课堂资料中找到足够依据回答这个问题。",
                 source_refs=[],
@@ -73,6 +89,7 @@ class QueryService:
         )
 
     def _source_ref(self, document: RagDocument) -> RagSourceRef:
+        """从 RagDocument 元数据构造检索层来源引用。"""
         source_type = document.metadata.get("type", "timeline")
         source_id = str(document.metadata.get("source_id", "unknown"))
         ts = document.metadata.get("ts")
@@ -84,6 +101,13 @@ class QueryService:
         )
 
     def _keywords(self, prompt: str) -> list[str]:
+        """从中英文 prompt 中提取粗粒度关键词。
+
+        这里不是通用中文分词，只做课堂演示足够用的启发式处理：
+        - 去掉“讲了什么/这节课/老师”等问题外壳。
+        - 保留英文单词和连续中文短语。
+        - 对较长中文短语生成 4 字滑窗，提高局部命中率。
+        """
         normalized = prompt.lower()
         stop_phrases = (
             "讲了什么",
@@ -104,6 +128,7 @@ class QueryService:
         keywords = [token for token in tokens if token.strip()]
         for token in list(keywords):
             if re.fullmatch(r"[\u4e00-\u9fff]{4,}", token):
+                # 没有引入 jieba 等分词依赖，所以用简单滑窗覆盖中文长词的局部匹配。
                 keywords.extend(
                     token[index : index + 4] for index in range(0, len(token) - 3)
                 )
@@ -112,6 +137,7 @@ class QueryService:
         return list(dict.fromkeys(keywords))
 
     def _score(self, text: str, keywords: list[str]) -> int:
+        """按命中关键词长度计算文档相关性分数。"""
         normalized = text.lower()
         return sum(len(keyword) for keyword in keywords if keyword in normalized)
 

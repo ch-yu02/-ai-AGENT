@@ -1,4 +1,4 @@
-"""Classroom Agent package.
+"""课堂 Agent 包入口。
 
 这里集中导出 Agent 层的公共类型，并创建默认 ``classroom_agent`` 单例。
 API 路由导入这个单例即可复用全局的 ContextManager、KnowledgeGraphManager
@@ -25,7 +25,7 @@ classroom_agent = ClassroomAgent(
 )
 """默认 Agent 实例。
 
-测试中通常直接 new ``ClassroomAgent`` 并传入临时 manager/storage；生产路由
+测试中通常直接创建 ``ClassroomAgent`` 并传入临时管理器/存储；生产路由
 使用这里的全局实例，读取当前应用正在维护的课堂内存和本地历史文件。
 """
 

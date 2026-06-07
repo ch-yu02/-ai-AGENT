@@ -42,6 +42,7 @@ from backend.app.models import (
     KnowledgeTree,
     LectureSession,
     SessionHistoryDetail,
+    SessionPostClassArtifacts,
     SessionHistorySummary,
     TimelineItem,
 )
@@ -229,7 +230,78 @@ class LocalStorage:
             timeline=timeline,
             knowledge_graph=knowledge_graph,
             storage_path=str(session_dir),
+            post_class_artifacts=self._read_post_class_artifacts(session_dir),
         )
+
+    def save_agent_artifacts(
+        self,
+        session_id: str,
+        artifacts: list[dict],
+    ) -> dict[str, Path]:
+        """保存 Agent 生成的课后结构化产物。
+
+        这是 Phase 4 的可选保存能力。调用方把“本次已经生成出来”的 artifact
+        列表传进来，本方法只负责按类型落盘，不负责决定哪些技能应该被触发。
+        因此文件是否出现，完全取决于传入的 artifact 类型：
+
+        ``data/sessions/{session_id}/summary.md``
+            课堂总结。结束课堂时会自动传入 summary artifact，因此通常会自动
+            出现在已完成课堂目录里；用户手动重新总结时也会覆盖更新。
+
+        ``data/sessions/{session_id}/todos.json``
+            待办候选列表。结束课堂时会自动传入 todos artifact，保持 JSON
+            方便前端或手机端后续结构化展示。
+
+        ``data/sessions/{session_id}/quiz.json``
+            自测题列表。不会在结束课堂时自动创建；只有用户在 AgentPanel
+            主动点击“生成自测”或输入出题类 prompt，Agent 传入 quiz artifact
+            后才会写出，避免无需求时提前生成练习题。
+
+        ``data/sessions/{session_id}/agent_artifacts.json``
+            各类型最新 artifact 的合并快照。结束课堂自动生成时先写入
+            summary/todos；用户主动生成自测时再合并 quiz，而不是丢掉之前的
+            summary/todos，便于调试和未来恢复 Agent 消息。
+
+        这个方法只写已存在的历史课堂目录，不会为录制中的课堂提前创建
+        session 目录。这样可以避免 ``data/sessions`` 里出现没有 metadata 的
+        半成品目录，保持历史列表语义清晰。
+        """
+        session_dir = self._safe_session_dir(session_id)
+        if not session_dir.exists() or not session_dir.is_dir():
+            raise FileNotFoundError(f"Saved session not found: {session_id}")
+
+        written: dict[str, Path] = {}
+        for artifact in artifacts:
+            artifact_type = str(artifact.get("type", "artifact"))
+            content = artifact.get("content")
+
+            if artifact_type == "summary":
+                path = session_dir / "summary.md"
+                self._write_text(path, self._artifact_text(content))
+            elif artifact_type == "todos":
+                path = session_dir / "todos.json"
+                self._write_json(path, content if isinstance(content, (list, dict)) else [])
+            elif artifact_type == "quiz":
+                # quiz 的写入入口保留在 storage 层，但触发时机由调用方控制。
+                # 当前业务规则是：结束课堂不传 quiz artifact；用户主动请求
+                # Agent 出题后才传入 quiz artifact，于是这里才会创建 quiz.json。
+                path = session_dir / "quiz.json"
+                self._write_json(path, content if isinstance(content, (list, dict)) else [])
+            else:
+                # 未知产物不丢弃，保存为独立 JSON，便于未来扩展新技能时调试。
+                path = session_dir / f"artifact_{artifact_type}.json"
+                self._write_json(path, artifact)
+
+            written[artifact_type] = path
+
+        # 除了类型专属文件，也维护一个按 type 合并的 artifact 索引。这样用户
+        # 结束课堂后先得到 summary/todos，稍后再主动生成 quiz 时，索引里会同时
+        # 保留三类最新产物；若用户重新生成某一类，则用新的 artifact 覆盖旧值。
+        snapshot_path = session_dir / "agent_artifacts.json"
+        merged_artifacts = self._merge_agent_artifacts(snapshot_path, artifacts)
+        self._write_json(snapshot_path, merged_artifacts)
+        written["agent_artifacts"] = snapshot_path
+        return written
 
     def delete_session(self, session_id: str) -> bool:
         """Delete one persisted session directory from local storage.
@@ -313,6 +385,89 @@ class LocalStorage:
     def _write_text(self, path: Path, content: str) -> None:
         """Write UTF-8 text content."""
         path.write_text(content, encoding="utf-8")
+
+    def _artifact_text(self, content: object) -> str:
+        """把 artifact content 转成适合写入 Markdown 的文本。
+
+        总结技能通常返回字符串；如果未来某个技能返回结构化对象，这里退回到
+        JSON pretty 格式，保证文件仍然可读。
+        """
+        if isinstance(content, str):
+            return content if content.endswith("\n") else content + "\n"
+
+        return json.dumps(content, ensure_ascii=False, indent=2) + "\n"
+
+    def _read_post_class_artifacts(self, session_dir: Path) -> SessionPostClassArtifacts:
+        """读取一节历史课堂的可选课后产物。
+
+        旧版本保存的课堂目录通常没有 summary.md / todos.json / quiz.json。
+        新规则下，quiz.json 也可能长期不存在，因为自测题需要用户主动生成。
+        这里采用宽容读取策略：文件不存在就返回默认空值；文件存在但格式错误时
+        仍然抛出 ValueError，让 API 层暴露数据损坏问题，避免前端展示半可信内容。
+        """
+        summary_path = session_dir / "summary.md"
+        todos_path = session_dir / "todos.json"
+        quiz_path = session_dir / "quiz.json"
+        artifacts_path = session_dir / "agent_artifacts.json"
+
+        return SessionPostClassArtifacts(
+            summary_markdown=(
+                summary_path.read_text(encoding="utf-8")
+                if summary_path.exists()
+                else None
+            ),
+            todos=(
+                self._read_json_list(todos_path)
+                if todos_path.exists()
+                else []
+            ),
+            quiz=(
+                self._read_json_list(quiz_path)
+                if quiz_path.exists()
+                else []
+            ),
+            agent_artifacts=(
+                self._read_json_list(artifacts_path)
+                if artifacts_path.exists()
+                else []
+            ),
+        )
+
+    def _merge_agent_artifacts(
+        self,
+        snapshot_path: Path,
+        new_artifacts: list[dict],
+    ) -> list[dict]:
+        """把新 artifact 合并进已有 agent_artifacts.json 快照。
+
+        合并规则按 artifact.type 去重：
+        - 已存在同类型 artifact：用新内容覆盖，表示用户重新生成了该产物；
+        - 新类型 artifact：追加到末尾，例如 summary/todos 之后追加 quiz；
+        - 没有 type 的异常 artifact：保留为 ``artifact`` 类型，仍然可调试。
+
+        如果旧快照文件不存在，说明这是该课堂第一次保存 Agent 产物，直接从空
+        列表开始即可。若旧快照存在但不是 JSON list，_read_json_list() 会抛出
+        ValueError，让调用方尽早发现本地文件损坏。
+        """
+        merged_by_type: dict[str, dict] = {}
+        ordered_types: list[str] = []
+
+        if snapshot_path.exists():
+            for artifact in self._read_json_list(snapshot_path):
+                if not isinstance(artifact, dict):
+                    continue
+                artifact_type = str(artifact.get("type", "artifact"))
+                if artifact_type not in merged_by_type:
+                    ordered_types.append(artifact_type)
+                merged_by_type[artifact_type] = artifact
+
+        for artifact in new_artifacts:
+            artifact_type = str(artifact.get("type", "artifact"))
+            if artifact_type not in merged_by_type:
+                ordered_types.append(artifact_type)
+            merged_by_type[artifact_type] = artifact
+
+        return [merged_by_type[artifact_type] for artifact_type in ordered_types]
 
     def _safe_session_dir(self, session_id: str) -> Path:
         """Return a resolved session dir and ensure it stays under base_dir."""

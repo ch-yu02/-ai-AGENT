@@ -1,8 +1,9 @@
-"""RAG utilities for classroom data.
+"""课堂数据 RAG 工具包。
 
-The package currently provides dependency-free document conversion and lexical
-retrieval. It deliberately mirrors the Phase 3 LlamaIndex shape without adding
-heavy dependencies yet.
+当前包提供无外部依赖的文档转换和词法检索能力。它刻意保持接近 Phase 3
+计划中的 LlamaIndex 形态，但暂时不引入重依赖。后续真正接入 LlamaIndex 时，
+优先替换 ``documents`` / ``index_manager`` / ``query_service`` 的内部实现，
+尽量不影响 Agent API 和前端调用方式。
 """
 
 from .documents import RagDocument, RagDocumentType, build_session_documents

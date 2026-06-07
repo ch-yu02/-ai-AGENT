@@ -13,18 +13,21 @@ import { formatClassTime } from "../utils/time";
 
 // 课堂 Agent 面板。
 //
-// 它只依赖当前 dashboard 里选中的 session：
+// 它只依赖当前看板里选中的 session：
 // - 实时课堂：session 来自 POST /sessions/start。
 // - 历史课堂：session 来自 GET /sessions/{session_id}/history 后的 reducer 状态。
 //
-// 组件不读取 transcript/timeline/graph props，因为 Agent 的资料读取统一放在后端；
+// 组件不读取 transcript/timeline/graph 属性，因为 Agent 的资料读取统一放在后端；
 // 前端只负责把 prompt 和 session_id 发给 /agent/chat，并展示响应。
 type AgentPanelProps = {
   session: LectureSession | null;
 };
 
-// 快捷按钮使用显式 mode，绕过后端关键词路由。这样即使 prompt 文案以后调整，
-// 点击“总结重点”仍会稳定执行 summary skill。
+// 快捷按钮使用显式 mode，绕过后端关键词路由。这样即使提示词文案以后调整，
+// 点击“总结重点”仍会稳定执行 summary 技能。
+//
+// 特别注意“生成自测”：quiz 不在结束课堂时自动生成。用户点击这个按钮后，
+// 后端 Agent 才会运行 quiz 技能，并在历史课堂目录存在时保存 quiz.json。
 const quickPrompts: Array<{ label: string; prompt: string; mode: AgentIntent }> = [
   { label: "总结重点", prompt: "总结这节课的重点", mode: "summary" },
   { label: "提取待办", prompt: "老师布置了什么作业或待办？", mode: "todos" },
@@ -117,7 +120,7 @@ export function AgentPanel({ session }: AgentPanelProps) {
         </div>
 
         <div className="agent-messages" aria-live="polite">
-          {/* aria-live 让辅助技术能感知新回答。这里不用复杂 markdown 渲染，
+          {/* aria-live 让辅助技术能感知新回答。这里不用复杂 Markdown 渲染，
               第一版 answer 只按纯文本和换行展示。 */}
           {messages.length === 0 ? (
             <div className="agent-empty">选择课堂后即可提问</div>
@@ -129,7 +132,7 @@ export function AgentPanel({ session }: AgentPanelProps) {
                   {message.intent ? <span>{intentLabels[message.intent]}</span> : null}
                 </div>
                 <p>{message.content}</p>
-                {/* artifacts 是结构化结果，例如 todos/quiz。第一版用 details
+                {/* artifacts 是结构化结果，例如 todos/quiz。第一版用折叠详情
                     保持紧凑展示，后续可替换为专门的卡片/列表组件。 */}
                 {message.artifacts?.length ? (
                   <div className="agent-artifacts">
@@ -180,19 +183,80 @@ export function AgentPanel({ session }: AgentPanelProps) {
 }
 
 function ArtifactView({ artifact }: { artifact: AgentArtifact }) {
-  // 后端 artifact.content 允许文本或 JSON-like 结构。这里统一转成可读文本，
-  // 保持组件无依赖；等 todos/quiz schema 固定后再做更精致的结构化渲染。
-  const content =
-    typeof artifact.content === "string"
-      ? artifact.content
-      : JSON.stringify(artifact.content, null, 2);
-
+  // 这里根据 artifact.type 做轻量结构化展示。后端已经把 summary/todos/quiz
+  // 拆成稳定类型，前端无需理解技能内部逻辑，只需要按产物类型选择渲染方式。
   return (
     <details>
       <summary>{artifact.title}</summary>
-      <pre>{content}</pre>
+      {artifact.type === "summary" ? (
+        <SummaryArtifact content={artifact.content} />
+      ) : artifact.type === "todos" ? (
+        <TodoArtifact content={artifact.content} />
+      ) : artifact.type === "quiz" ? (
+        <QuizArtifact content={artifact.content} />
+      ) : (
+        <pre>{formatArtifactContent(artifact.content)}</pre>
+      )}
     </details>
   );
+}
+
+function SummaryArtifact({ content }: { content: AgentArtifact["content"] }) {
+  return <p className="artifact-summary">{formatArtifactContent(content)}</p>;
+}
+
+function TodoArtifact({ content }: { content: AgentArtifact["content"] }) {
+  const items = Array.isArray(content) ? content : [];
+
+  if (items.length === 0) {
+    return <p className="artifact-empty">没有待办候选</p>;
+  }
+
+  return (
+    <ul className="artifact-list">
+      {items.map((item, index) => (
+        <li key={index}>
+          <strong>{stringValue(item.title, "未命名待办")}</strong>
+          <span>
+            置信度 {numberValue(item.confidence, 0).toFixed(2)}
+            {item.due_time ? ` · 截止 ${String(item.due_time)}` : ""}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function QuizArtifact({ content }: { content: AgentArtifact["content"] }) {
+  const items = Array.isArray(content) ? content : [];
+
+  if (items.length === 0) {
+    return <p className="artifact-empty">没有自测题</p>;
+  }
+
+  return (
+    <ol className="artifact-list quiz-list">
+      {items.map((item, index) => (
+        <li key={index}>
+          <strong>{stringValue(item.question, `第 ${index + 1} 题`)}</strong>
+          <span>答案：{stringValue(item.answer, "暂无答案")}</span>
+          {item.explanation ? <p>{String(item.explanation)}</p> : null}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function formatArtifactContent(content: AgentArtifact["content"]): string {
+  return typeof content === "string" ? content : JSON.stringify(content, null, 2);
+}
+
+function stringValue(value: unknown, fallback: string): string {
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function numberValue(value: unknown, fallback: number): number {
+  return typeof value === "number" ? value : fallback;
 }
 
 function SourceRefs({ refs }: { refs: AgentSourceRef[] }) {
@@ -214,8 +278,8 @@ function SourceRefs({ refs }: { refs: AgentSourceRef[] }) {
 }
 
 function formatAgentError(error: unknown): string {
-  // ApiError 来自 services/api.ts，保留了后端返回的 detail。普通 Error 通常是
-  // 网络/CORS/浏览器侧异常。
+  // ApiError 来自 services/api.ts，保留了后端返回的 detail。普通错误对象通常是
+  // 网络、跨域或浏览器侧异常。
   if (error instanceof ApiError) {
     return error.detail;
   }

@@ -536,6 +536,12 @@ describe("classroomReducer", () => {
           edges: [],
         },
         storage_path: "data/sessions/lec_history",
+        post_class_artifacts: {
+          summary_markdown: "这是一份历史课堂总结。",
+          todos: [{ title: "完成第三题", confidence: 0.6 }],
+          quiz: [{ question: "傅里叶变换有什么作用？", answer: "转换到频域。" }],
+          agent_artifacts: [],
+        },
       },
     });
 
@@ -546,6 +552,9 @@ describe("classroomReducer", () => {
     expect(state.visuals[0].ocr_text).toBe("历史 OCR");
     expect(state.graph.version).toBe(4);
     expect(state.graph.nodes[0].label).toBe("历史知识点");
+    expect(state.postClassArtifacts.summary_markdown).toContain("历史课堂总结");
+    expect(state.postClassArtifacts.todos[0].title).toBe("完成第三题");
+    expect(state.postClassArtifacts.quiz[0].question).toContain("傅里叶变换");
   });
 
   it("clears dashboard when the loaded history session is deleted", () => {
@@ -645,5 +654,11 @@ function historyDetail(sessionId: string) {
       edges: [],
     },
     storage_path: `data/sessions/${sessionId}`,
+    post_class_artifacts: {
+      summary_markdown: null,
+      todos: [],
+      quiz: [],
+      agent_artifacts: [],
+    },
   };
 }

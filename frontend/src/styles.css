@@ -301,6 +301,10 @@ button:disabled {
   grid-column: 1 / -1;
 }
 
+.post-class-panel {
+  min-height: 300px;
+}
+
 .panel-header {
   align-items: center;
   border-bottom: 1px solid #e5ebf2;
@@ -598,6 +602,48 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.segmented-control.compact {
+  min-width: 210px;
+}
+
+.post-class-content {
+  flex: 1;
+  overflow: auto;
+  padding: 14px 18px 18px;
+}
+
+.post-class-summary {
+  line-height: 1.7;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.post-class-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.post-class-list li {
+  line-height: 1.5;
+}
+
+.post-class-list strong {
+  display: block;
+}
+
+.post-class-list span {
+  color: #637083;
+  display: block;
+  font-size: 13px;
+  margin-top: 4px;
+}
+
+.post-class-list p {
+  margin: 5px 0 0;
+}
+
 .agent-body {
   display: grid;
   gap: 12px;
@@ -695,6 +741,41 @@ button:disabled {
   margin: 8px 0 0;
   overflow: auto;
   white-space: pre-wrap;
+}
+
+.artifact-summary,
+.artifact-empty {
+  margin: 8px 0 0;
+}
+
+.artifact-empty {
+  color: #7a8698;
+}
+
+.artifact-list {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding-left: 18px;
+}
+
+.artifact-list li {
+  line-height: 1.5;
+}
+
+.artifact-list strong {
+  display: block;
+}
+
+.artifact-list span {
+  color: #637083;
+  display: block;
+  font-size: 12px;
+  margin-top: 3px;
+}
+
+.quiz-list p {
+  margin: 4px 0 0;
 }
 
 .agent-source-list {

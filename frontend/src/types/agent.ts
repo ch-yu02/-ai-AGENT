@@ -1,10 +1,10 @@
 // 前端 Agent API 类型。
 //
-// 字段名保持后端 Pydantic 模型的 snake_case，不在 service 层做转换。这样
+// 字段名保持后端 Pydantic 模型的 snake_case，不在服务层做转换。这样
 // docs/API_SCHEMA.md、后端 schemas.py 和前端类型可以一一对照，减少联调歧义。
 
 export type AgentIntent = "auto" | "qa" | "summary" | "todos" | "quiz";
-// 后端已经解析出的最终意图。响应里不会返回 auto。
+// 后端已经解析出的最终意图。响应里不会返回自动路由模式。
 export type ResolvedAgentIntent = "qa" | "summary" | "todos" | "quiz";
 
 export type AgentChatRequest = {
@@ -12,7 +12,7 @@ export type AgentChatRequest = {
   session_id: string;
   // 用户自然语言输入。
   prompt: string;
-  // auto 表示交给后端 IntentRouter；快捷按钮会传显式模式。
+  // 自动路由模式表示交给后端 IntentRouter；快捷按钮会传显式模式。
   mode?: AgentIntent;
 };
 
@@ -48,8 +48,8 @@ export type AgentChatResponse = {
 // AgentPanel 内部消息模型。
 //
 // 目前 Agent 聊天记录只存在组件状态里，不进入 classroomReducer。原因是它不参与
-// 实时事件合并，也不会影响 transcript/timeline/visual/graph 四个课堂面板。
-// 后续如果要保存 data/sessions/{session_id}/agent_messages.json，可再提升到 store。
+// 实时事件合并，也不会影响字幕、时间线、视觉内容、知识图谱四个课堂面板。
+// 后续如果要保存 data/sessions/{session_id}/agent_messages.json，可再提升到状态层。
 export type AgentMessage = {
   role: "user" | "assistant";
   content: string;

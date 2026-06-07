@@ -77,6 +77,9 @@ class ClassroomAgentTest(unittest.TestCase):
         self.assertEqual(response.intent, "summary")
         self.assertIn("傅里叶变换", response.answer)
         self.assertEqual(response.warnings, [])
+        summary_path = self.storage.session_dir(self.session_id) / "summary.md"
+        self.assertTrue(summary_path.exists())
+        self.assertIn("傅里叶变换", summary_path.read_text(encoding="utf-8"))
 
     def test_extracts_todo_candidates(self) -> None:
         self._start_memory_session()
@@ -119,6 +122,14 @@ class ClassroomAgentTest(unittest.TestCase):
                 },
             )
         )
+        # 先把课堂保存成历史目录，模拟用户结束课程后再点击 AgentPanel 的
+        # “生成自测”。只有目录已存在时，Agent 才会把本次 quiz artifact 写成本地
+        # quiz.json；正在录制且未落盘的课堂仍只返回回答，不提前创建历史目录。
+        self.storage.save_session(
+            session=self._ended_session(),
+            context=self.context_manager.get_context(self.session_id),
+            knowledge_graph=self.graph_manager.get_graph(self.session_id),
+        )
 
         response = self.agent.chat(
             AgentChatRequest(session_id=self.session_id, prompt="出几道题")
@@ -127,6 +138,9 @@ class ClassroomAgentTest(unittest.TestCase):
         self.assertEqual(response.intent, "quiz")
         self.assertIn("采样定理", response.answer)
         self.assertEqual(response.artifacts[0].type, "quiz")
+        quiz_path = self.storage.session_dir(self.session_id) / "quiz.json"
+        self.assertTrue(quiz_path.exists())
+        self.assertIn("采样定理", quiz_path.read_text(encoding="utf-8"))
 
     def test_missing_session_raises_domain_error(self) -> None:
         with self.assertRaises(AgentSessionNotFoundError):

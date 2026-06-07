@@ -1,10 +1,10 @@
-"""Rule-based intent routing for the first classroom Agent.
+"""第一版课堂 Agent 的规则版意图路由。
 
 第一版 Agent 的目标是“先跑通可测试闭环”，所以这里使用可预测的关键词规则，
 而不是直接接 LLM 做意图分类。这样做有三个好处：
 
 1. 单元测试稳定，不依赖网络、API key 或模型版本。
-2. 前端 demo 可离线运行，符合当前本地 MVP 阶段。
+2. 前端演示可离线运行，符合当前本地 MVP 阶段。
 3. 后续替换为小模型/LLM router 时，只需要保持 ``route()`` 的输入输出契约。
 """
 
@@ -12,7 +12,7 @@ from .schemas import AgentIntent, ResolvedAgentIntent
 
 
 class IntentRouter:
-    """Resolve a user prompt to one of the supported classroom skills.
+    """把用户 prompt 解析为一个受支持的课堂技能。
 
     路由优先级是 summary → todos → quiz → qa。这个顺序有意把“总结重点”
     这类高频入口放前面；如果 prompt 同时包含多个关键词，显式快捷按钮应通过
@@ -26,7 +26,7 @@ class IntentRouter:
     _quiz_keywords = ("出题", "出", "测验", "quiz", "选择题", "自测", "题目", "练习")
 
     def route(self, prompt: str, mode: AgentIntent = "auto") -> ResolvedAgentIntent:
-        """Return the requested intent, honoring explicit non-auto modes.
+        """返回最终意图，并优先尊重显式传入的非 auto 模式。
 
         ``mode`` 是前端快捷按钮和未来技能入口的“人工指定路线”。只要它不是
         ``auto``，这里就直接返回，不再检查 prompt。这让 UI 能稳定调用某个

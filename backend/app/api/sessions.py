@@ -48,6 +48,7 @@ from backend.app.models import (
     StartSessionRequest,
     WebSocketMessage,
 )
+from backend.app.skills import SummarizerSkill, TodoDetectiveSkill
 from backend.app.storage import local_storage
 
 
@@ -226,6 +227,11 @@ async def end_session(session_id: str) -> LectureSession:
         context=context,
         knowledge_graph=knowledge_graph,
     )
+    post_class_files = _generate_and_save_post_class_artifacts(
+        session_id=session_id,
+        context=context,
+        knowledge_graph=knowledge_graph,
+    )
 
     await websocket_manager.broadcast(
         session_id,
@@ -240,8 +246,46 @@ async def end_session(session_id: str) -> LectureSession:
                         name: str(path)
                         for name, path in storage_result.files.items()
                     },
+                    "post_class_files": {
+                        name: str(path)
+                        for name, path in post_class_files.items()
+                    },
                 },
             },
         ),
     )
     return ended_session
+
+
+def _generate_and_save_post_class_artifacts(
+    session_id: str,
+    context,
+    knowledge_graph,
+) -> dict[str, object]:
+    """结束课堂时自动生成并保存规则版“基础课后产物”。
+
+    这里刻意只自动生成 summary.md 和 todos.json：
+    - 总结、待办属于“结束课堂后通常就应该有”的基础学习材料；
+    - quiz 属于主动练习场景，必须由用户在 AgentPanel 中点击“生成自测”或
+      输入出题类 prompt 后再生成，避免系统在用户没有需求时提前写入题目。
+
+    ``save_agent_artifacts()`` 仍会额外写出 agent_artifacts.json。这个快照只
+    记录本次自动生成的 summary/todos，因此结束课堂时不会出现 quiz.json。
+
+    这里仍然通过 LocalStorage 写文件，保持“API 不直接拼路径、不直接写磁盘”
+    的存储边界。
+    """
+    skill_results = [
+        SummarizerSkill().run(session_id, context, knowledge_graph),
+        TodoDetectiveSkill().run(session_id, context, knowledge_graph),
+    ]
+    artifacts = [
+        {
+            "type": result.artifact.type,
+            "title": result.artifact.title,
+            "content": result.artifact.content,
+        }
+        for result in skill_results
+        if result.artifact is not None
+    ]
+    return local_storage.save_agent_artifacts(session_id, artifacts)

@@ -8,7 +8,7 @@
 """
 
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -158,3 +158,24 @@ class SessionHistoryDetail(BaseModel):
     """保存到 knowledge_graph.json 的完整知识图谱快照。"""
     storage_path: str
     """本地历史课堂目录路径。"""
+    post_class_artifacts: "SessionPostClassArtifacts" = Field(
+        default_factory=lambda: SessionPostClassArtifacts()
+    )
+    """课后产物读取结果，包括 summary/todos/quiz/agent_artifacts。"""
+
+
+class SessionPostClassArtifacts(BaseModel):
+    """历史课堂目录中的可选课后产物。
+
+    这些文件不是结束课堂主链路的必要条件。旧历史课堂可能没有这些文件，因此
+    字段都提供默认值，让前端可以安全区分“没有生成”和“读取失败”。
+    """
+
+    summary_markdown: str | None = None
+    """summary.md 的文本内容。"""
+    todos: list[dict[str, Any]] = Field(default_factory=list)
+    """todos.json 的结构化待办候选。"""
+    quiz: list[dict[str, Any]] = Field(default_factory=list)
+    """quiz.json 的结构化自测题。"""
+    agent_artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    """agent_artifacts.json 中保存的完整 Agent artifact 快照。"""

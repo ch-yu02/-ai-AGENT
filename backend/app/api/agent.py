@@ -1,4 +1,4 @@
-"""HTTP routes for the classroom Agent.
+"""课堂 Agent 的 HTTP 路由。
 
 本模块保持 API 层“薄路由”原则：
 - 请求/响应模型来自 ``backend.app.agent.schemas``。
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/agent", tags=["agent"])
 
 @router.post("/chat", response_model=AgentChatResponse)
 async def chat(request: AgentChatRequest) -> AgentChatResponse:
-    """Run the classroom Agent for one prompt.
+    """针对一次 prompt 运行课堂 Agent。
 
     404 的语义是“内存和本地历史文件都找不到这个 session”。如果 session 存在
     但课堂资料不足，Agent 会正常返回 200，并在 ``warnings`` 中说明数据不足。
