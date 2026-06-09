@@ -1,133 +1,45 @@
 # EDU-Mate Agent Development Plan
 
-本文档说明 EDU-Mate / Lecture-Link 从“实时课堂看板”升级为“课堂数据
-Agent”的开发计划。目标是让用户可以在前端输入自然语言 prompt，后端
-Agent 基于课堂数据完成问答、总结、待办提取和自测题生成。
+本文档记录 EDU-Mate / Lecture-Link 课堂 Agent 的当前状态和后续开发重点。
+项目已经从“实时课堂看板”进入“可演示课堂 Agent”阶段。
 
-## 1. 总体目标
+## 当前状态
 
-当前系统已经具备：
+已完成能力：
 
-1. 前端创建课堂 session。
-2. 后端接收实时事件。
-3. 前端实时展示字幕、时间线、图片/OCR 和知识图谱。
-4. 结束课堂后保存本地文件。
-5. mock sender 可以向前端已创建的 session 发送模拟课堂事件。
+- 实时课堂：创建/结束课堂、接收事件、WebSocket 推送字幕、图片/OCR、时间线和知识图谱。
+- 历史课堂：结束后保存本地文件，前端可打开历史详情并删除本地历史。
+- 单节课堂 Agent：`POST /agent/chat` 支持 `qa` / `summary` / `todos` / `quiz`。
+- 课后产物：
+  - 结束课堂自动生成 `summary.md` 和 `todos.json`。
+  - `quiz.json` 只在用户主动生成自测题后保存。
+  - Agent 对话保存到 `agent_messages.json`，打开历史课堂时恢复。
+- 可选 Cloud LLM：配置 `LLM_API_KEY` 后，summary/todos/quiz 优先尝试云端模型，失败时回退规则版。
+- 可选单节课 LlamaIndex：`RAG_QUERY_BACKEND=llamaindex` 时启用，结束课堂后尝试保存 `llama_index/`，查询失败时回退词法检索。
+- 跨课堂搜索第一版：`POST /agent/search` 可搜索已保存历史课堂，支持课程和日期过滤，前端可打开命中课堂并定位来源。
+- 本地全局搜索快照：跨课堂搜索会写出 `data/indexes/global/documents.json`，但目前仍是词法搜索快照，不是真正向量索引。
 
-下一阶段 Agent 的目标是：
-
-```text
-用户自然语言 prompt
-→ 后端 Agent 读取课堂数据
-→ Agent 判断意图
-→ 检索 transcript / timeline / OCR / knowledge graph
-→ 调用对应技能
-→ 返回答案、结构化结果和来源引用
-→ 前端展示
-```
-
-Agent 第一版应服务于课堂数据，不做开放域闲聊。
-
-## 2. Agent 能力范围
-
-MVP Agent 需要支持四类 prompt：
-
-| 用户意图 | 示例 prompt | 输出 |
-| --- | --- | --- |
-| 课堂问答 | `傅里叶变换这一段老师讲了什么？` | 带来源引用的回答 |
-| 课堂总结 | `总结这节课的重点` | 分点总结 / 复习提纲 |
-| 待办提取 | `老师布置了什么作业？` | 待办列表 |
-| 自测题生成 | `根据这节课出 5 道题` | 题目、答案、解析 |
-
-暂不支持：
-
-- 开放域百科问答。
-- 无课堂依据的自由创作。
-- 自动控制硬件设备。
-- 跨用户权限管理。
-- 多 Agent 自主协作。
-
-## 3. 推荐技术路线
-
-分两层实现：
-
-1. **轻量 Agent Router**
-   - 负责接收 prompt。
-   - 根据关键词或小模型判断用户意图。
-   - 调用问答、总结、待办、出题等技能。
-   - 第一版可以不依赖 LlamaIndex。
-
-2. **LlamaIndex RAG 层**
-   - 负责把课堂文件转换成可检索文档。
-   - 建立单节课索引。
-   - 检索相关片段。
-   - 生成带来源的回答。
-
-推荐顺序：
+主要运行时产物：
 
 ```text
-先做可测试的 Agent API
-→ 再接 LlamaIndex 单节课 RAG
-→ 再做结构化 Skill
-→ 最后做索引持久化和跨课堂检索
-```
-
-## 4. 目标目录结构
-
-后端新增：
-
-```text
-backend/app/agent/
-  __init__.py
-  classroom_agent.py
-  intent_router.py
-  schemas.py
-  source_refs.py
-
-backend/app/rag/
-  __init__.py
-  documents.py
-  index_manager.py
-  query_service.py
-
-backend/app/skills/
-  __init__.py
-  summarizer.py
-  todo_detective.py
-  quiz_master.py
-  qa.py
-
-backend/app/llm/
-  __init__.py
-  cloud_client.py
-  settings.py
-```
-
-前端新增：
-
-```text
-frontend/src/components/AgentPanel.tsx
-frontend/src/services/agentApi.ts
-frontend/src/types/agent.ts
-```
-
-后续可新增：
-
-```text
-data/sessions/{session_id}/agent_messages.json
+data/sessions/{session_id}/metadata.json
+data/sessions/{session_id}/transcript.md
+data/sessions/{session_id}/timeline.json
+data/sessions/{session_id}/knowledge_graph.json
 data/sessions/{session_id}/summary.md
 data/sessions/{session_id}/todos.json
 data/sessions/{session_id}/quiz.json
+data/sessions/{session_id}/agent_messages.json
+data/sessions/{session_id}/agent_artifacts.json
 data/sessions/{session_id}/llama_index/
+data/indexes/global/documents.json
 ```
 
-## 5. API 设计
+## 当前接口
 
-新增接口：
+### `POST /agent/chat`
 
-```text
-POST /agent/chat
-```
+单节课堂 Agent 入口，用于对录制中课堂或历史课堂问答、总结、提取待办、生成自测题。
 
 请求：
 
@@ -139,660 +51,193 @@ POST /agent/chat
 }
 ```
 
-字段说明：
+`mode` 可选：`auto` / `qa` / `summary` / `todos` / `quiz`。
 
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `session_id` | string | 是 | 课堂 ID |
-| `prompt` | string | 是 | 用户自然语言输入 |
-| `mode` | string | 否 | `auto` / `qa` / `summary` / `todos` / `quiz` |
+响应核心字段：
 
-响应：
+- `intent`：识别出的意图。
+- `answer`：主回答。
+- `artifacts`：结构化产物。
+- `source_refs`：来源引用。
+- `warnings`：数据不足、LLM 失败、检索回退等提示。
 
-```json
-{
-  "session_id": "lec_xxx",
-  "intent": "summary",
-  "answer": "这节课主要讲了傅里叶变换的定义、时域和频域的关系……",
-  "artifacts": [
-    {
-      "type": "summary",
-      "title": "课堂总结",
-      "content": "..."
-    }
-  ],
-  "source_refs": [
-    {
-      "type": "segment",
-      "id": "seg_002",
-      "ts": 5.0,
-      "text": "傅里叶变换可以把时域信号转换到频域……"
-    }
-  ],
-  "warnings": []
-}
-```
+### `POST /agent/search`
 
-响应字段：
+跨课堂搜索入口，用于在已保存历史课堂中搜索知识点、作业、概念或其他课堂资料。
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `intent` | string | Agent 判断出的意图 |
-| `answer` | string | 给用户展示的主回答 |
-| `artifacts` | object[] | 结构化结果，如 summary/todos/quiz |
-| `source_refs` | object[] | 来源引用 |
-| `warnings` | string[] | 数据不足、未找到依据、LLM 失败等提示 |
-
-## 6. 阶段划分
-
-### Phase 0：准备与契约确认
-
-目标：明确 Agent 数据契约，不接 LlamaIndex，不接云端模型。
-
-功能：
-
-- 新增 `docs/AGENT_DEVELOPMENT_PLAN.md`。
-- 在 `docs/API_SCHEMA.md` 中补充未来 `/agent/chat` 契约。
-- 明确 Agent 只处理课堂数据。
-- 明确 `source_refs` 格式。
-
-验收：
-
-- 文档能解释 Agent 能做什么、不能做什么。
-- 前后端开发者能按文档实现第一版接口。
-
-### Phase 1：本地 Agent 外壳
-
-目标：先跑通前后端 Agent 闭环，不依赖 LlamaIndex 或云端 LLM。
-
-后端功能：
-
-- 新增 `backend/app/agent/schemas.py`。
-- 新增 `ClassroomAgent`。
-- 新增 `IntentRouter`。
-- 新增 `POST /agent/chat`。
-- 从内存中的 `ContextManager` 和 `KnowledgeGraphManager` 读取当前课堂数据。
-- 对已结束课堂，优先复用后续 History API 的读取能力。
-
-第一版路由规则：
-
-```text
-包含 总结 / 重点 / 提纲 → summary
-包含 作业 / 待办 / 预习 / 考试 → todos
-包含 出题 / 测验 / quiz / 选择题 → quiz
-其他 → qa
-```
-
-第一版返回策略：
-
-- `summary`：基于 transcript 前若干条和知识节点生成规则化摘要。
-- `todos`：用关键词从 transcript 中提取疑似待办。
-- `quiz`：用知识节点生成简单问答题。
-- `qa`：关键词匹配 transcript，返回相关片段。
-
-前端功能：
-
-- 新增 `AgentPanel`。
-- 用户输入 prompt。
-- 调用 `POST /agent/chat`。
-- 展示 answer、artifacts、source_refs、warnings。
-
-测试：
-
-- `test_agent_intent_router.py`
-- `test_classroom_agent.py`
-- 前端 service/reducer 测试。
-
-验收：
-
-- 用户能在前端输入 `总结这节课` 并看到结果。
-- 用户能输入 `有什么作业` 并看到待办候选。
-- 用户能输入 `出几道题` 并看到题目。
-- 不需要 API key。
-
-### Phase 2：History API 与历史课堂 Agent
-
-目标：让 Agent 能处理后端重启后的历史课堂。
-
-后端功能：
-
-- 扩展 `LocalStorage` 读取：
-  - `list_sessions()`
-  - `read_session_artifacts(session_id)`
-  - `read_transcript(session_id)`
-  - `read_timeline(session_id)`
-  - `read_knowledge_graph(session_id)`
-- 新增历史接口：
-
-```text
-GET /history
-GET /history/{session_id}
-```
-
-- Agent 查询 session 时：
-  - 若 session 在内存中，读内存。
-  - 若不在内存中，读本地保存文件。
-
-前端功能：
-
-- 历史课堂列表。
-- 历史课堂详情。
-- 在历史课堂详情中使用 AgentPanel。
-
-测试：
-
-- 存储读取测试使用 `tempfile.TemporaryDirectory()`。
-- 不依赖真实 `data/sessions/`。
-
-验收：
-
-- 后端重启后仍可打开已保存课堂。
-- 用户能对历史课堂提问。
-
-### Phase 3：接入 LlamaIndex 单节课 RAG
-
-目标：让问答从规则匹配升级为检索增强生成。
-
-后端功能：
-
-- 新增 `backend/app/rag/documents.py`：
-  - transcript segment → LlamaIndex Document
-  - visual OCR/caption → LlamaIndex Document
-  - knowledge node/edge → LlamaIndex Document
-- 每个 Document 携带 metadata：
+请求：
 
 ```json
 {
-  "session_id": "lec_xxx",
-  "type": "transcript",
-  "source_id": "seg_002",
-  "ts": 5.0
+  "query": "哪节课讲过采样定理",
+  "course": "通信原理",
+  "date_from": "2026-06-01",
+  "date_to": "2026-06-09",
+  "limit": 8
 }
 ```
 
-- 新增 `query_service.py`：
-  - `query_session(session_id, prompt)`
-  - 返回 answer 和 source refs。
+响应核心字段：
 
-依赖建议：
+- `answer`：搜索结果摘要。
+- `hits`：命中列表，每项包含 `session_id`、课堂标题、课程、分数和 `source_ref`。
+- `warnings`：坏历史目录跳过、索引回退等提示。
+
+## 后端结构
+
+核心模块：
 
 ```text
-llama-index
+backend/app/agent/
+  classroom_agent.py
+  global_search.py
+  intent_router.py
+  schemas.py
+  source_refs.py
+
+backend/app/rag/
+  documents.py
+  query_service.py
+  llama_query_service.py
+  service_factory.py
+
+backend/app/skills/
+  qa.py
+  summarizer.py
+  todo_detective.py
+  quiz_master.py
+  llm_support.py
+
+backend/app/llm/
+  cloud_client.py
+  settings.py
 ```
 
-若使用本地中文 embedding，可能还需要：
+职责边界：
+
+- API 路由只做参数接收、错误转换和 manager/agent 调用。
+- 课堂数据读写继续放在 `LocalStorage`。
+- Agent 负责意图识别和技能编排。
+- RAG 层负责把课堂历史转换为可检索文档。
+- Skill 层负责生成 summary/todos/quiz/qa 结果。
+
+## 前端结构
+
+核心入口：
 
 ```text
-llama-index-embeddings-huggingface
-sentence-transformers
-torch
+frontend/src/components/AgentPanel.tsx
+frontend/src/components/GlobalSearchPanel.tsx
+frontend/src/services/agentApi.ts
+frontend/src/types/agent.ts
 ```
 
-若使用云端模型，按 provider 添加：
+已完成表现：
+
+- 历史课堂详情中可直接查看 summary/todos/quiz。
+- 用户主动点击或输入后才生成 quiz。
+- Agent 对话在历史课堂重新打开后可以恢复。
+- 全局搜索结果可以打开对应历史课堂，并尽量高亮字幕、图片/OCR 或时间线来源。
+
+## 未完成能力
+
+### 真实全局向量索引
+
+当前只有 `data/indexes/global/documents.json` 文档快照，搜索仍是词法评分。
+
+未完成原因：
+
+- 需要选择 embedding provider 和索引持久化策略。
+- LlamaIndex、embedding、本地模型依赖较重，不适合作为默认硬依赖。
+- 历史课堂删除后，全局索引也要同步更新或重建。
+
+建议实现：
+
+1. 新增 `backend/app/rag/global_index_service.py`。
+2. 使用 `data/indexes/global/` 保存真正 LlamaIndex 全局索引。
+3. `POST /agent/search` 优先查全局向量索引，失败时回退当前词法搜索。
+4. 删除历史课堂后同步重建或标记相关文档失效。
+
+### 录制中增量索引
+
+当前单节课索引主要在结束课堂后持久化；录制中 QA 仍依赖内存文档和当前查询服务。
+
+未完成原因：
+
+- 每条字幕都重建索引会浪费性能。
+- ASR/OCR/VLM 结果可能延迟或修正，需要去重和更新策略。
+- 实时事件请求不应被重索引阻塞。
+
+建议实现：
+
+1. 为 session 增加 dirty 标记。
+2. 每 N 条字幕或 N 秒批量刷新临时索引。
+3. 结束课堂时构建最终完整索引。
+4. 后续可把刷新放入后台任务队列。
+
+### 真实 Provider Smoke Test
+
+当前 LLM 和 LlamaIndex 测试都使用 fake client，不访问真实 provider。
+
+未完成原因：
+
+- 真实调用需要 API key、网络、额度和模型版本。
+- 不同 provider 的 JSON 输出稳定性不同。
+- 云端调用涉及课堂隐私，需要明确开关和文档。
+
+建议实现：
+
+1. 增加 `scripts/dev.sh llm-smoke`。
+2. 无 `LLM_API_KEY` 时跳过并提示。
+3. 有 key 时用固定课堂 fixture 测 summary/todos/quiz。
+4. 检查结构化输出，不合格时确认 fallback 和 warning。
+
+### URL 深链接
+
+当前搜索结果可以在当前页面打开历史课堂并高亮来源，但刷新页面后状态会丢失。
+
+未完成原因：
+
+- 前端还没有路由层。
+- 当前历史课堂和 source_ref 只存在 App 内存状态里。
+- 图谱节点/边的精确聚焦还不完整。
+
+建议实现：
 
 ```text
-llama-index-llms-openai
+/?session_id=lec_xxx&source_type=segment&source_id=seg_001
 ```
 
-或后续 DeepSeek/Qwen 兼容 OpenAI API 的 client。
+App 启动时读取 URL，自动打开历史课堂，并把 focused source 传给对应面板。
 
-第一版索引策略：
+### 本地模型模式
 
-- 先临时构建内存索引。
-- 每次 `/agent/chat` 根据 session artifacts 构建小型索引并查询。
-- 课堂数据量变大后再做持久化。
+当前支持规则版 fallback 和 OpenAI-compatible 云端模型，还没有正式接本地 LLM/embedding。
 
-Prompt 约束：
+未完成原因：
 
-```text
-只能基于课堂资料回答。
-如果课堂资料中没有找到依据，明确说明没有找到。
-回答必须尽量引用来源片段。
-```
+- 本地模型运行时差异大，例如 Ollama、vLLM、llama.cpp。
+- 本地 embedding 依赖和硬件要求较重。
+- 本地模型的结构化 JSON 稳定性需要单独验证。
 
-测试：
-
-- 用小型 fixture 构造 transcript/timeline/graph。
-- 单元测试只验证 documents 转换和 source_refs 映射。
-- LLM 调用用 fake client 或 mock query service。
-
-验收：
-
-- 用户问具体知识点时，答案能引用相关字幕或 OCR。
-- 找不到内容时不会编造。
-
-### Phase 4：结构化 Skills
-
-目标：把总结、待办和自测题变成正式课后产物。
-
-后端功能：
-
-- `SummarizerSkill`
-  - 输出 `summary.md`。
-  - 包含课堂重点、知识脉络、公式/概念、复习建议。
-
-- `TodoDetectiveSkill`
-  - 输出 `todos.json`。
-  - 字段：`title`、`type`、`due_time`、`source_refs`、`confidence`。
-
-- `QuizMasterSkill`
-  - 输出 `quiz.json`。
-  - 字段：`question`、`type`、`options`、`answer`、`explanation`、`source_refs`。
-
-新增接口可选：
+建议实现：
 
 ```text
-POST /sessions/{session_id}/skills/summary
-POST /sessions/{session_id}/skills/todos
-POST /sessions/{session_id}/skills/quiz
-```
-
-也可以统一走：
-
-```text
-POST /agent/chat
-```
-
-前端功能：
-
-- AgentPanel 展示结构化 artifact。
-- 课后区域展示 summary/todos/quiz。
-- 支持重新生成。
-
-测试：
-
-- 使用固定课堂 fixture。
-- 检查结构化字段完整性。
-- 检查结果保存路径。
-
-验收：
-
-- 用户输入 `总结这节课`，生成并展示 summary。
-- 用户输入 `提取作业`，生成 todos。
-- 用户输入 `出 5 道题`，生成 quiz。
-
-### Phase 5：Cloud LLM Client
-
-目标：统一管理云端模型调用，避免每个 Skill 自己访问 provider。
-
-后端功能：
-
-- 新增 `backend/app/llm/cloud_client.py`。
-- 新增 `backend/app/llm/settings.py`。
-- 支持环境变量配置：
-
-```text
-LLM_PROVIDER=deepseek
-LLM_API_KEY=...
+LLM_PROVIDER=local
+LLM_BASE_URL=http://127.0.0.1:11434/v1
 LLM_MODEL=...
-LLM_BASE_URL=...
-LLM_TIMEOUT_SECONDS=30
-LLM_MAX_RETRIES=1
 ```
 
-- 支持：
-  - timeout
-  - retry
-  - 错误包装
-  - structured JSON 输出校验
-  - fallback 文案
+先支持 OpenAI-compatible 本地服务，再补充 smoke 文档，不放入默认测试。
 
-当前实现状态：
+## 下一步顺序
 
-- `CloudLLMClient` 使用 OpenAI-compatible `/chat/completions` 协议，默认支持
-  DeepSeek，也可通过 `LLM_BASE_URL` 接入其他兼容供应商。
-- 没有 `LLM_API_KEY` 时，系统不会创建云端客户端，summary/todos/quiz 继续走
-  本地规则版。
-- `SummarizerSkill`、`TodoDetectiveSkill`、`QuizMasterSkill` 已支持可选
-  LLM-backed 输出；模型失败、超时、返回非 JSON 或结构不符合预期时会回退规则版。
-- `QuizMasterSkill` 仍只在用户主动请求出题时运行；结束课堂只自动生成
-  summary/todos，不自动写 `quiz.json`。
-- 单元测试使用 fake client，不访问真实云端模型。
+建议按验证收益优先：
 
-安全要求：
+1. 增加真实 LLM smoke 脚本和使用文档。
+2. 做 URL 深链接和图谱来源高亮。
+3. 做全局 LlamaIndex 向量索引。
+4. 做录制中批量增量索引。
+5. 做本地模型模式文档和 smoke test。
 
-- API key 只在后端读取。
-- 不允许前端直接持有 API key。
-- `.env` 不提交 git。
-
-测试：
-
-- mock HTTP client。
-- 测试超时、失败、非 JSON、schema 不匹配。
-
-验收：
-
-- Skill 可以切换 rule-based / LLM-backed 实现。
-- LLM 失败时前端能看到明确错误，不影响课堂数据保存。
-
-### Phase 6：索引持久化与增量更新
-
-目标：提升历史课堂 Agent 的响应速度。
-
-当前已完成 Phase 6 的可选持久化索引主链路。
-
-启用方式：
-
-```text
-RAG_QUERY_BACKEND=llamaindex
-```
-
-可选依赖：
-
-```text
-llama-index
-```
-
-如果使用 OpenAI-compatible LLM 或 embedding provider，再按实际供应商安装
-对应 LlamaIndex 扩展。当前代码不把 `llama-index` 作为硬依赖；未安装或查询
-失败时会回退到本地词法检索，并在 warning 中说明。
-
-已实现：
-
-- `backend/app/rag/llama_query_service.py`
-  - 把内部 `RagDocument` 转换为 `llama_index.core.Document`。
-  - 查询时优先从 `data/sessions/{session_id}/llama_index/` 加载已有索引。
-  - 没有持久化索引时，使用 `VectorStoreIndex.from_documents()` 构建单节课临时索引。
-  - 结束课堂时可调用 `build_and_persist()` 构建并保存索引。
-  - 从 `response.source_nodes` 映射回 `RagSourceRef`。
-  - 加载、构建或查询失败时回退 `QueryService`。
-- `backend/app/rag/service_factory.py`
-  - 默认使用词法检索。
-  - `RAG_QUERY_BACKEND=llamaindex` 时切换到 LlamaIndex 服务。
-  - LlamaIndex 服务通过 `LocalStorage.session_index_dir()` 获取安全索引目录。
-- `backend/app/storage/local_storage.py`
-  - 新增 `session_index_dir(session_id)`，统一管理
-    `data/sessions/{session_id}/llama_index/` 路径。
-- `backend/app/api/sessions.py`
-  - 结束课堂保存主文件和自动课后产物后，在启用 `RAG_QUERY_BACKEND=llamaindex`
-    时尝试持久化索引。
-  - 索引失败不会让结束课堂失败，只在 WebSocket `storage.rag_index` 中返回
-    warning/status。
-- `QaSkill` 通过工厂创建查询服务，不直接绑定某个 RAG 实现。
-
-后端功能：
-
-- 结束课堂时构建索引：
-
-```text
-data/sessions/{session_id}/llama_index/
-```
-
-- 如果索引存在，直接加载。
-- 如果索引不存在，按需临时构建；结束课堂路径会主动持久化。
-- 未来支持课堂中周期性增量索引。
-
-限制：
-
-- 实时课堂不建议每条字幕都重建索引。
-- 可以按 N 条 transcript 或 N 秒做批量更新。
-
-验收：
-
-- 历史课堂第一次查询可重建索引。
-- 第二次查询能复用索引。
-
-### Phase 7：跨课堂搜索与长期记忆
-
-目标：支持跨多个 session 的学习助手能力。
-
-当前已完成 Phase 7 第一版：本地历史课堂跨 session 搜索。
-
-已实现：
-
-- `POST /agent/search`
-  - 请求字段：`query`、可选 `course`、可选 `limit`。
-  - 只搜索已保存到 `data/sessions` 的历史课堂。
-  - 逐节读取历史详情，转换为 RAG 文档后做跨 session 词法评分。
-  - 返回 `answer`、`hits`、`warnings`。
-  - 每个 hit 都包含 `session_id`、`title`、`course`、`score` 和 `source_ref`。
-- `backend/app/agent/global_search.py`
-  - 负责历史列表读取、课程过滤、坏历史目录跳过、跨课堂排序。
-  - 当前使用确定性本地检索，便于测试；未来可替换为全局 LlamaIndex 索引。
-- `frontend/src/components/GlobalSearchPanel.tsx`
-  - 提供全局搜索入口。
-  - 支持课程过滤。
-  - 支持日期范围过滤。
-  - 展示命中的课堂标题、课程、来源类型、来源 ID、课堂内时间和分数。
-  - 支持从搜索命中直接打开对应历史课堂，并高亮/滚动到对应来源。
-- `data/indexes/global/documents.json`
-  - 当前保存跨课堂搜索使用的本地文档快照。
-  - 后续接入全局 LlamaIndex/向量索引时复用 `data/indexes/global/` 作为根目录。
-- `data/sessions/{session_id}/agent_messages.json`
-  - 保存历史课堂中用户与 Agent 的对话。
-  - 打开历史课堂时，AgentPanel 会恢复已保存对话。
-
-后续功能：
-
-- 全局向量索引：
-
-```text
-data/indexes/global/
-```
-
-- 支持问题：
-
-```text
-我之前哪节课讲过采样定理？
-把最近三节通信原理课的重点串起来。
-找出所有老师布置过的作业。
-```
-
-前端功能：
-
-- 全局 Agent 入口：已完成第一版。
-- 按课程过滤：已完成第一版。
-- 按日期过滤：已完成第一版。
-- 来源引用跳转到对应历史课堂：已完成第一版，当前可打开课堂详情并定位到
-  对应 timeline/source_ref。
-
-验收：
-
-- 可以跨 session 检索：已完成。
-- 回答中能标注来自哪节课：已完成。
-
-## 7. 数据转换设计
-
-### Transcript Document
-
-输入：
-
-```json
-{
-  "segment_id": "seg_002",
-  "start_ts": 5.0,
-  "end_ts": 9.6,
-  "text": "傅里叶变换可以把时域信号转换到频域。"
-}
-```
-
-Document：
-
-```text
-text = "[5.0s-9.6s] 傅里叶变换可以把时域信号转换到频域。"
-metadata = {
-  session_id,
-  type: "segment",
-  source_id: "seg_002",
-  ts: 5.0
-}
-```
-
-### Visual Document
-
-输入：
-
-```json
-{
-  "image_id": "img_001",
-  "capture_ts": 10.5,
-  "ocr_text": "X(f)=∫x(t)e^{-j2πft}dt",
-  "caption": "课件展示傅里叶变换公式。"
-}
-```
-
-Document：
-
-```text
-text = "[10.5s] OCR: ... Caption: ..."
-metadata = {
-  session_id,
-  type: "visual",
-  source_id: "img_001",
-  ts: 10.5
-}
-```
-
-### Knowledge Document
-
-输入：
-
-```json
-{
-  "node_id": "node_fourier_transform",
-  "label": "傅里叶变换",
-  "summary": "将信号从时域表示转换为频域表示的数学工具"
-}
-```
-
-Document：
-
-```text
-text = "知识点：傅里叶变换。说明：将信号从时域表示转换为频域表示的数学工具。"
-metadata = {
-  session_id,
-  type: "knowledge_node",
-  source_id: "node_fourier_transform"
-}
-```
-
-## 8. 前端 AgentPanel 设计
-
-组件职责：
-
-- 接收当前 `session_id`。
-- 输入自然语言 prompt。
-- 调用 `agentApi.chat()`。
-- 展示加载中、错误、回答、结构化产物和来源引用。
-
-推荐交互：
-
-```text
-输入框 placeholder: "问问这节课，比如：总结重点 / 有什么作业 / 出几道题"
-快捷按钮：总结重点、提取待办、生成自测题
-回答区域：Markdown 文本
-来源区域：segment / visual / knowledge 引用
-```
-
-前端状态：
-
-```ts
-type AgentMessage = {
-  role: "user" | "assistant";
-  content: string;
-  intent?: string;
-  artifacts?: AgentArtifact[];
-  source_refs?: AgentSourceRef[];
-  warnings?: string[];
-};
-```
-
-## 9. 测试策略
-
-后端测试：
-
-- IntentRouter：
-  - prompt 到 intent 的映射。
-- Agent schema：
-  - 请求/响应模型校验。
-- Documents：
-  - transcript/timeline/graph 到 Document 的转换。
-- Query service：
-  - fake query engine 返回可控结果。
-- Skills：
-  - 规则版 summary/todos/quiz 输出稳定。
-
-前端测试：
-
-- `agentApi.chat()` 请求格式。
-- AgentPanel 基础渲染。
-- loading/error/success 状态。
-- artifacts/source_refs 展示。
-
-不建议：
-
-- 单元测试直接调用真实云端 LLM。
-- 测试依赖真实 `data/sessions/`。
-- 测试依赖前端 dev server。
-
-## 10. 风险与限制
-
-### 上下文长度
-
-一节课 transcript 可能很长，不能直接塞进 prompt。
-
-缓解：
-
-- 使用 LlamaIndex 检索。
-- 分段总结。
-- 使用 `get_compressed_context()`。
-
-### 幻觉
-
-LLM 可能编造课堂中没有出现的内容。
-
-缓解：
-
-- 强制基于课堂资料回答。
-- 找不到依据时明确说明。
-- 返回 source_refs。
-- 前端展示引用。
-
-### 实时数据不完整
-
-正在上课时，ASR/OCR/知识抽取可能尚未完整。
-
-缓解：
-
-- 响应中加入 warning。
-- 标记 `data_status=recording`。
-- 对高质量问答优先使用已结束课堂。
-
-### 依赖变重
-
-LlamaIndex、本地 embedding、torch 可能显著增加安装体积。
-
-缓解：
-
-- 第一版先不接 LlamaIndex。
-- 允许使用云端 embedding。
-- 本地 embedding 作为可选安装。
-
-### API Key 与隐私
-
-课堂内容可能被发送到云端模型。
-
-缓解：
-
-- API key 只放后端环境变量。
-- `.env` 不提交 git。
-- 前端提示云端调用。
-- 后续支持本地模型模式。
-
-## 11. 推荐立即执行顺序
-
-当前最推荐的实际开发顺序：
-
-1. 实现 History API 和 LocalStorage 读取能力。
-2. 新增 `/agent/chat` schema 和空实现。
-3. 实现 rule-based IntentRouter。
-4. 实现不依赖 LLM 的 QA/Summary/Todos/Quiz 初版。
-5. 前端新增 AgentPanel。
-6. 接入 LlamaIndex 单节课 RAG。
-7. 引入 CloudLLMClient。
-8. 将 summary/todos/quiz 保存为课后产物。
-9. 做索引持久化。
-10. 做跨课堂搜索。
-
-这样能保证每一步都有可演示结果，而不是一次性引入大模型和复杂 Agent
-框架后才看到效果。
+默认测试仍应保持不依赖网络、不依赖真实 API key、不依赖重量级本地模型。
