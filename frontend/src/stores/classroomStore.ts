@@ -39,6 +39,7 @@ export const initialDashboardState: ClassroomDashboardState = {
     todos: [],
     quiz: [],
     agent_artifacts: [],
+    agent_messages: [],
   },
 };
 
@@ -149,6 +150,7 @@ function emptyPostClassArtifacts() {
     todos: [],
     quiz: [],
     agent_artifacts: [],
+    agent_messages: [],
   };
 }
 

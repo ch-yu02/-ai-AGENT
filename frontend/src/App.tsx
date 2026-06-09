@@ -385,7 +385,10 @@ function App() {
           <VisualOcrPanel focusedSource={focusedSource} visuals={state.visuals} />
           <KnowledgeGraphPanel graph={state.graph} />
           <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
-          <AgentPanel session={state.session} />
+          <AgentPanel
+            persistedMessages={state.postClassArtifacts.agent_messages}
+            session={state.session}
+          />
           <GlobalSearchPanel
             isOpenDisabled={state.session?.status === "recording"}
             onOpenSession={(sessionId, sourceRef) => void handleOpenHistory(sessionId, sourceRef)}

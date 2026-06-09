@@ -27,6 +27,8 @@ export function GlobalSearchPanel({
 }: GlobalSearchPanelProps) {
   const [query, setQuery] = useState("");
   const [course, setCourse] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
   const [response, setResponse] = useState<GlobalSearchResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -44,6 +46,8 @@ export function GlobalSearchPanel({
       const result = await searchAcrossClassrooms({
         query: trimmedQuery,
         course: course.trim() || null,
+        date_from: dateFrom || null,
+        date_to: dateTo || null,
         limit: 8,
       });
       setResponse(result);
@@ -82,6 +86,20 @@ export function GlobalSearchPanel({
             onChange={(event) => setCourse(event.target.value)}
             placeholder="课程过滤"
             value={course}
+          />
+          <input
+            aria-label="开始日期"
+            disabled={isLoading}
+            onChange={(event) => setDateFrom(event.target.value)}
+            type="date"
+            value={dateFrom}
+          />
+          <input
+            aria-label="结束日期"
+            disabled={isLoading}
+            onChange={(event) => setDateTo(event.target.value)}
+            type="date"
+            value={dateTo}
           />
           <button className="primary-button" disabled={!query.trim() || isLoading}>
             {isLoading ? "搜索中" : "搜索"}

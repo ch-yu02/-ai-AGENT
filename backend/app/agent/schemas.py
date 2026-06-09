@@ -104,6 +104,10 @@ class GlobalSearchRequest(BaseModel):
     """用户问题或关键词，例如“哪节课讲过采样定理”。"""
     course: str | None = None
     """可选课程过滤。为空时搜索全部历史课堂。"""
+    date_from: str | None = None
+    """可选开始日期，格式 YYYY-MM-DD，按课堂 start_time 过滤。"""
+    date_to: str | None = None
+    """可选结束日期，格式 YYYY-MM-DD，按课堂 start_time 过滤。"""
     limit: int = Field(default=8, ge=1, le=20)
     """最多返回多少条来源命中。"""
 

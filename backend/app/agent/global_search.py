@@ -79,6 +79,16 @@ class GlobalSearchService:
                 for summary in summaries
                 if (summary.session.course or "").lower() == expected_course
             ]
+        if request.date_from or request.date_to:
+            summaries = [
+                summary
+                for summary in summaries
+                if self._is_in_date_range(
+                    summary.session.start_time,
+                    request.date_from,
+                    request.date_to,
+                )
+            ]
 
         if not summaries:
             return GlobalSearchResponse(
@@ -91,6 +101,7 @@ class GlobalSearchService:
         keywords = self._keywords(query)
         scored: list[_ScoredDocument] = []
         warnings: list[str] = []
+        global_index_documents: list[dict] = []
 
         for summary in summaries:
             session_id = summary.session.session_id
@@ -103,6 +114,14 @@ class GlobalSearchService:
             context = self._context_from_history(session_id, detail.timeline)
             documents = build_session_documents(context, detail.knowledge_graph)
             for document in documents:
+                global_index_documents.append(
+                    self._global_index_record(
+                        session_id=session_id,
+                        title=detail.session.title,
+                        course=detail.session.course,
+                        document=document,
+                    )
+                )
                 score = self._score(document.text, keywords)
                 if score <= 0:
                     continue
@@ -115,6 +134,8 @@ class GlobalSearchService:
                         document=document,
                     )
                 )
+
+        self.storage.save_global_search_index(global_index_documents)
 
         ranked = sorted(scored, key=lambda item: item.score, reverse=True)
         hits = [self._hit(item) for item in ranked[: request.limit]]
@@ -203,6 +224,41 @@ class GlobalSearchService:
                 text=item.document.text,
             ),
         )
+
+    def _global_index_record(
+        self,
+        *,
+        session_id: str,
+        title: str,
+        course: str | None,
+        document: RagDocument,
+    ) -> dict:
+        """把一条 RAG 文档保存为全局索引快照记录。"""
+        return {
+            "session_id": session_id,
+            "title": title,
+            "course": course,
+            "text": document.text,
+            "metadata": document.metadata,
+        }
+
+    def _is_in_date_range(
+        self,
+        start_time: str,
+        date_from: str | None,
+        date_to: str | None,
+    ) -> bool:
+        """按 YYYY-MM-DD 字符串过滤课堂开始日期。
+
+        LectureSession.start_time 是 ISO 字符串，前 10 位就是日期。这里不做时区
+        转换，保证和后端保存的本地时间表示一致。
+        """
+        session_date = start_time[:10]
+        if date_from and session_date < date_from:
+            return False
+        if date_to and session_date > date_to:
+            return False
+        return True
 
     def _keywords(self, query: str) -> list[str]:
         """从查询中提取中英文关键词。

@@ -142,6 +142,15 @@ class LocalStorage:
         """
         return self._safe_session_dir(session_id) / "llama_index"
 
+    def global_index_dir(self) -> Path:
+        """返回跨课堂全局索引目录。
+
+        默认 ``base_dir`` 是 ``data/sessions``，因此全局索引放在同级的
+        ``data/indexes/global``。这样单节课档案和跨课索引分开存放，删除某节
+        历史课堂时不会误删全局目录。
+        """
+        return self.base_dir.parent / "indexes" / "global"
+
     def read_metadata(self, session_id: str) -> dict:
         """Read persisted metadata.json for history features.
 
@@ -323,6 +332,39 @@ class LocalStorage:
         written["agent_artifacts"] = snapshot_path
         return written
 
+    def append_agent_messages(
+        self,
+        session_id: str,
+        messages: list[dict],
+    ) -> Path:
+        """追加保存一轮 Agent 对话到 ``agent_messages.json``。
+
+        只对已落盘历史课堂写入。正在录制的课堂还没有完整 metadata/timeline，
+        不在这里提前创建目录，避免历史列表出现半成品课堂。
+        """
+        session_dir = self._safe_session_dir(session_id)
+        if not session_dir.exists() or not session_dir.is_dir():
+            raise FileNotFoundError(f"Saved session not found: {session_id}")
+
+        path = session_dir / "agent_messages.json"
+        existing = self._read_json_list(path) if path.exists() else []
+        existing.extend(messages)
+        self._write_json(path, existing)
+        return path
+
+    def save_global_search_index(self, documents: list[dict]) -> Path:
+        """保存跨课堂搜索的本地全局索引快照。
+
+        这不是向量库索引，而是 Phase 7 第一版的可审计文档快照：
+        ``data/indexes/global/documents.json``。后续切到真正全局 LlamaIndex 时，
+        这个目录仍可作为全局索引根目录。
+        """
+        index_dir = self.global_index_dir()
+        index_dir.mkdir(parents=True, exist_ok=True)
+        path = index_dir / "documents.json"
+        self._write_json(path, documents)
+        return path
+
     def delete_session(self, session_id: str) -> bool:
         """Delete one persisted session directory from local storage.
 
@@ -429,6 +471,7 @@ class LocalStorage:
         todos_path = session_dir / "todos.json"
         quiz_path = session_dir / "quiz.json"
         artifacts_path = session_dir / "agent_artifacts.json"
+        messages_path = session_dir / "agent_messages.json"
 
         return SessionPostClassArtifacts(
             summary_markdown=(
@@ -449,6 +492,11 @@ class LocalStorage:
             agent_artifacts=(
                 self._read_json_list(artifacts_path)
                 if artifacts_path.exists()
+                else []
+            ),
+            agent_messages=(
+                self._read_json_list(messages_path)
+                if messages_path.exists()
                 else []
             ),
         )

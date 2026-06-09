@@ -143,6 +143,7 @@ class ClassroomAgent:
 
         response = self._response_from_skill_result(request.session_id, intent, result)
         self._save_artifacts_when_possible(request.session_id, response)
+        self._save_messages_when_possible(request, response)
 
         if data.data_status == "recording":
             response.warnings.append("课堂仍在录制中，回答只基于当前已收到的数据。")
@@ -279,6 +280,44 @@ class ClassroomAgent:
         self.storage.save_agent_artifacts(
             session_id,
             [artifact.model_dump() for artifact in response.artifacts],
+        )
+
+    def _save_messages_when_possible(
+        self,
+        request: AgentChatRequest,
+        response: AgentChatResponse,
+    ) -> None:
+        """在历史课堂目录存在时保存 Agent 对话记录。
+
+        保存为 ``agent_messages.json``，格式贴近前端 ``AgentMessage``：
+        - 用户消息保存 role/content。
+        - Agent 消息保存 answer、intent、artifacts、source_refs、warnings。
+
+        正在录制且未落盘的课堂不会写入，避免创建半成品历史目录。
+        """
+        if not self.storage.session_exists(request.session_id):
+            return
+
+        self.storage.append_agent_messages(
+            request.session_id,
+            [
+                {
+                    "role": "user",
+                    "content": request.prompt,
+                },
+                {
+                    "role": "assistant",
+                    "content": response.answer,
+                    "intent": response.intent,
+                    "artifacts": [
+                        artifact.model_dump() for artifact in response.artifacts
+                    ],
+                    "source_refs": [
+                        ref.model_dump() for ref in response.source_refs
+                    ],
+                    "warnings": list(response.warnings),
+                },
+            ],
         )
 
 

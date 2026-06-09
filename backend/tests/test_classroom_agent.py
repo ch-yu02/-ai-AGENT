@@ -80,6 +80,12 @@ class ClassroomAgentTest(unittest.TestCase):
         summary_path = self.storage.session_dir(self.session_id) / "summary.md"
         self.assertTrue(summary_path.exists())
         self.assertIn("傅里叶变换", summary_path.read_text(encoding="utf-8"))
+        detail = self.storage.read_session(self.session_id)
+        self.assertEqual(detail.post_class_artifacts.agent_messages[0]["role"], "user")
+        self.assertEqual(
+            detail.post_class_artifacts.agent_messages[1]["role"],
+            "assistant",
+        )
 
     def test_extracts_todo_candidates(self) -> None:
         self._start_memory_session()

@@ -50,6 +50,9 @@ export type GlobalSearchRequest = {
   query: string;
   // 可选课程过滤；为空时搜索全部历史课堂。
   course?: string | null;
+  // 可选日期范围，格式 YYYY-MM-DD。
+  date_from?: string | null;
+  date_to?: string | null;
   // 最多返回多少条命中。
   limit?: number;
 };
@@ -79,9 +82,9 @@ export type GlobalSearchResponse = {
 
 // AgentPanel 内部消息模型。
 //
-// 目前 Agent 聊天记录只存在组件状态里，不进入 classroomReducer。原因是它不参与
-// 实时事件合并，也不会影响字幕、时间线、视觉内容、知识图谱四个课堂面板。
-// 后续如果要保存 data/sessions/{session_id}/agent_messages.json，可再提升到状态层。
+// Agent 聊天记录主要存在组件状态里，不进入 classroomReducer 的实时消息合并。
+// 历史课堂会从 data/sessions/{session_id}/agent_messages.json 读取旧对话，并在
+// AgentPanel 初始化时恢复展示。
 export type AgentMessage = {
   role: "user" | "assistant";
   content: string;

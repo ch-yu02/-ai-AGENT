@@ -293,6 +293,41 @@ class LocalStorageTest(unittest.TestCase):
         ]
         self.assertEqual(artifact_types, ["summary", "todos", "quiz"])
 
+    def test_append_agent_messages_writes_history_chat_file(self) -> None:
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        path = self.storage.append_agent_messages(
+            self.session_id,
+            [
+                {"role": "user", "content": "总结这节课"},
+                {"role": "assistant", "content": "这节课讲了傅里叶变换。"},
+            ],
+        )
+
+        self.assertTrue(path.exists())
+        detail = self.storage.read_session(self.session_id)
+        self.assertEqual(detail.post_class_artifacts.agent_messages[0]["role"], "user")
+
+    def test_save_global_search_index_writes_documents_snapshot(self) -> None:
+        path = self.storage.save_global_search_index(
+            [
+                {
+                    "session_id": self.session_id,
+                    "title": "通信原理",
+                    "text": "傅里叶变换",
+                    "metadata": {"type": "segment"},
+                }
+            ]
+        )
+
+        self.assertEqual(path, self.base_dir.parent / "indexes" / "global" / "documents.json")
+        data = json.loads(path.read_text(encoding="utf-8"))
+        self.assertEqual(data[0]["session_id"], self.session_id)
+
     def test_delete_session_removes_saved_history_directory(self) -> None:
         self.storage.save_session(
             session=self._session(),

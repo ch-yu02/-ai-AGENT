@@ -849,7 +849,12 @@ button:disabled {
 .global-search-form {
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(240px, 1fr) minmax(160px, 260px) auto;
+  grid-template-columns:
+    minmax(220px, 1fr)
+    minmax(140px, 210px)
+    minmax(135px, 160px)
+    minmax(135px, 160px)
+    auto;
 }
 
 .global-search-form input {

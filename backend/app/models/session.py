@@ -179,3 +179,5 @@ class SessionPostClassArtifacts(BaseModel):
     """quiz.json 的结构化自测题。"""
     agent_artifacts: list[dict[str, Any]] = Field(default_factory=list)
     """agent_artifacts.json 中保存的完整 Agent artifact 快照。"""
+    agent_messages: list[dict[str, Any]] = Field(default_factory=list)
+    """agent_messages.json 中保存的历史 Agent 对话。"""

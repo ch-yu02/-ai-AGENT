@@ -68,6 +68,51 @@ class GlobalSearchServiceTest(unittest.TestCase):
         self.assertTrue(response.hits)
         self.assertTrue(all(hit.course == "高等数学" for hit in response.hits))
 
+    def test_search_filters_by_date_range(self) -> None:
+        self._save_session(
+            session_id="lec_global_old",
+            title="旧课",
+            course="通信原理",
+            text="采样定理旧课内容。",
+            node_label="采样定理",
+            start_time="2026-06-01T09:00:00+08:00",
+        )
+        self._save_session(
+            session_id="lec_global_new",
+            title="新课",
+            course="通信原理",
+            text="采样定理新课内容。",
+            node_label="采样定理",
+            start_time="2026-06-05T09:00:00+08:00",
+        )
+
+        response = self.service.search(
+            GlobalSearchRequest(
+                query="采样定理",
+                date_from="2026-06-05",
+                date_to="2026-06-05",
+            )
+        )
+
+        self.assertTrue(response.hits)
+        self.assertTrue(all(hit.session_id == "lec_global_new" for hit in response.hits))
+
+    def test_search_writes_global_index_snapshot(self) -> None:
+        self._save_session(
+            session_id="lec_global_index",
+            title="通信原理第8讲",
+            course="通信原理",
+            text="傅里叶变换可以转换到频域。",
+            node_label="傅里叶变换",
+        )
+
+        self.service.search(GlobalSearchRequest(query="傅里叶变换"))
+
+        index_path = (
+            self.storage.global_index_dir() / "documents.json"
+        )
+        self.assertTrue(index_path.exists())
+
     def test_search_returns_warning_when_no_history_exists(self) -> None:
         response = self.service.search(GlobalSearchRequest(query="采样定理"))
 
@@ -99,6 +144,7 @@ class GlobalSearchServiceTest(unittest.TestCase):
         course: str,
         text: str,
         node_label: str,
+        start_time: str = "2026-06-04T09:00:00+08:00",
     ) -> None:
         segment = TranscriptSegment(
             segment_id=f"{session_id}_seg_001",
@@ -137,7 +183,7 @@ class GlobalSearchServiceTest(unittest.TestCase):
                 title=title,
                 course=course,
                 teacher=None,
-                start_time="2026-06-04T09:00:00+08:00",
+                start_time=start_time,
                 end_time="2026-06-04T10:30:00+08:00",
                 status="ended",
                 language="zh-CN",

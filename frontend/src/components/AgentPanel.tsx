@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { chatWithAgent } from "../services/agentApi";
 import { ApiError } from "../services/api";
@@ -21,6 +21,7 @@ import { formatClassTime } from "../utils/time";
 // 前端只负责把 prompt 和 session_id 发给 /agent/chat，并展示响应。
 type AgentPanelProps = {
   session: LectureSession | null;
+  persistedMessages?: Array<Record<string, unknown>>;
 };
 
 // 快捷按钮使用显式 mode，绕过后端关键词路由。这样即使提示词文案以后调整，
@@ -41,13 +42,17 @@ const intentLabels: Record<string, string> = {
   quiz: "自测",
 };
 
-export function AgentPanel({ session }: AgentPanelProps) {
+export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps) {
   // prompt 是输入框草稿；messages 是本面板的轻量聊天记录。它们不进入全局
   // classroomReducer，因为 Agent 对话不参与实时事件合并。
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setMessages(persistedMessages.map(normalizeAgentMessage));
+  }, [session?.session_id, persistedMessages]);
 
   async function submitAgentPrompt(nextPrompt = prompt, mode: AgentIntent = "auto") {
     const trimmedPrompt = nextPrompt.trim();
@@ -180,6 +185,31 @@ export function AgentPanel({ session }: AgentPanelProps) {
       </div>
     </section>
   );
+}
+
+function normalizeAgentMessage(message: Record<string, unknown>): AgentMessage {
+  // 把后端保存的宽松 JSON 还原成 AgentPanel 使用的消息形态。
+  const role = message.role === "assistant" ? "assistant" : "user";
+  return {
+    role,
+    content: typeof message.content === "string" ? message.content : "",
+    intent:
+      message.intent === "qa" ||
+      message.intent === "summary" ||
+      message.intent === "todos" ||
+      message.intent === "quiz"
+        ? message.intent
+        : undefined,
+    artifacts: Array.isArray(message.artifacts)
+      ? (message.artifacts as AgentMessage["artifacts"])
+      : undefined,
+    source_refs: Array.isArray(message.source_refs)
+      ? (message.source_refs as AgentMessage["source_refs"])
+      : undefined,
+    warnings: Array.isArray(message.warnings)
+      ? message.warnings.map(String)
+      : undefined,
+  };
 }
 
 function ArtifactView({ artifact }: { artifact: AgentArtifact }) {

@@ -146,6 +146,8 @@ export type SessionPostClassArtifacts = {
   quiz: Array<Record<string, unknown>>;
   // agent_artifacts.json 的完整 artifact 快照。
   agent_artifacts: Array<Record<string, unknown>>;
+  // agent_messages.json 的历史 Agent 对话。
+  agent_messages: Array<Record<string, unknown>>;
 };
 
 // 单条图谱增量操作。

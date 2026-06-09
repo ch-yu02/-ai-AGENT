@@ -552,12 +552,19 @@ data/sessions/{session_id}/llama_index/
 - `frontend/src/components/GlobalSearchPanel.tsx`
   - 提供全局搜索入口。
   - 支持课程过滤。
+  - 支持日期范围过滤。
   - 展示命中的课堂标题、课程、来源类型、来源 ID、课堂内时间和分数。
   - 支持从搜索命中直接打开对应历史课堂，并高亮/滚动到对应来源。
+- `data/indexes/global/documents.json`
+  - 当前保存跨课堂搜索使用的本地文档快照。
+  - 后续接入全局 LlamaIndex/向量索引时复用 `data/indexes/global/` 作为根目录。
+- `data/sessions/{session_id}/agent_messages.json`
+  - 保存历史课堂中用户与 Agent 的对话。
+  - 打开历史课堂时，AgentPanel 会恢复已保存对话。
 
 后续功能：
 
-- 全局索引：
+- 全局向量索引：
 
 ```text
 data/indexes/global/
@@ -575,7 +582,7 @@ data/indexes/global/
 
 - 全局 Agent 入口：已完成第一版。
 - 按课程过滤：已完成第一版。
-- 按日期过滤：待实现。
+- 按日期过滤：已完成第一版。
 - 来源引用跳转到对应历史课堂：已完成第一版，当前可打开课堂详情并定位到
   对应 timeline/source_ref。
 

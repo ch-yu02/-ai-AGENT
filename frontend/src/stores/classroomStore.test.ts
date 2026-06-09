@@ -541,6 +541,7 @@ describe("classroomReducer", () => {
           todos: [{ title: "完成第三题", confidence: 0.6 }],
           quiz: [{ question: "傅里叶变换有什么作用？", answer: "转换到频域。" }],
           agent_artifacts: [],
+          agent_messages: [],
         },
       },
     });
@@ -659,6 +660,7 @@ function historyDetail(sessionId: string) {
       todos: [],
       quiz: [],
       agent_artifacts: [],
+      agent_messages: [],
     },
   };
 }
