@@ -69,6 +69,10 @@ function App() {
     // 页面首次打开就静默加载历史列表。silent=true 表示失败时仍会显示错误，
     // 成功时不打扰用户；顶部状态提示继续留给“开始/结束课堂”等主动操作。
     void loadHistorySessions({ silent: true });
+    const deepLink = parseHistoryDeepLink();
+    if (deepLink) {
+      void handleOpenHistory(deepLink.sessionId, deepLink.sourceRef);
+    }
 
     return () => {
       socketRef.current?.close();
@@ -206,6 +210,7 @@ function App() {
       // 仍高亮某节历史课，让用户误以为当前显示的是历史内容。
       setSelectedHistoryId(null);
       setFocusedSource(null);
+      clearHistoryDeepLink();
       setStatusMessage("课堂已开始，正在连接 WebSocket。");
       connectWebSocket(session.session_id);
     } catch (error) {
@@ -281,6 +286,7 @@ function App() {
       });
       setSelectedHistoryId(sessionId);
       setFocusedSource(focusedSourceRef);
+      writeHistoryDeepLink(sessionId, focusedSourceRef);
       setStatusMessage(
         focusedSourceRef ? "历史课程已加载，已定位到搜索命中来源。" : "历史课程已加载。",
       );
@@ -318,6 +324,7 @@ function App() {
       if (selectedHistoryId === sessionId) {
         setSelectedHistoryId(null);
         setFocusedSource(null);
+        clearHistoryDeepLink();
       }
 
       dispatch({
@@ -383,7 +390,7 @@ function App() {
           />
           <TimelinePanel focusedSource={focusedSource} timeline={state.timeline} />
           <VisualOcrPanel focusedSource={focusedSource} visuals={state.visuals} />
-          <KnowledgeGraphPanel graph={state.graph} />
+          <KnowledgeGraphPanel focusedSource={focusedSource} graph={state.graph} />
           <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
           <AgentPanel
             persistedMessages={state.postClassArtifacts.agent_messages}
@@ -397,6 +404,67 @@ function App() {
       </section>
     </main>
   );
+}
+
+type HistoryDeepLink = {
+  sessionId: string;
+  sourceRef: GlobalSearchSourceRef | null;
+};
+
+// 从 URL query 中恢复历史课堂定位。
+//
+// 设计成 query 而不是前端路由，是为了不引入额外依赖，也不改变 Vite 单页应用
+// 的部署方式。只有 session_id 是必需的；source_type/source_id 成对出现时才
+// 进入具体来源高亮。
+function parseHistoryDeepLink(): HistoryDeepLink | null {
+  const params = new URLSearchParams(window.location.search);
+  const sessionId = params.get("session_id");
+  if (!sessionId) {
+    return null;
+  }
+
+  const sourceType = params.get("source_type");
+  const sourceId = params.get("source_id");
+  if (!sourceType || !sourceId) {
+    return {
+      sessionId,
+      sourceRef: null,
+    };
+  }
+
+  const rawTs = params.get("ts");
+  const ts = rawTs === null ? null : Number(rawTs);
+  return {
+    sessionId,
+    sourceRef: {
+      type: sourceType,
+      id: sourceId,
+      ts: Number.isFinite(ts) ? ts : null,
+      // URL 里只保存定位所需字段。展示文本仍来自历史课堂内容本身；这里留空
+      // 是为了满足 GlobalSearchSourceRef 类型，并避免把长文本塞进地址栏。
+      text: "",
+    },
+  };
+}
+
+function writeHistoryDeepLink(
+  sessionId: string,
+  sourceRef: GlobalSearchSourceRef | null,
+) {
+  const params = new URLSearchParams();
+  params.set("session_id", sessionId);
+  if (sourceRef) {
+    params.set("source_type", sourceRef.type);
+    params.set("source_id", sourceRef.id);
+    if (typeof sourceRef.ts === "number") {
+      params.set("ts", String(sourceRef.ts));
+    }
+  }
+  window.history.replaceState(null, "", `${window.location.pathname}?${params.toString()}`);
+}
+
+function clearHistoryDeepLink() {
+  window.history.replaceState(null, "", window.location.pathname);
 }
 
 // 把 service 层抛出的错误转换成用户可读文案。

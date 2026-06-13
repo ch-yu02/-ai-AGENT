@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.app.agent import GlobalSearchRequest, GlobalSearchService
 from backend.app.models import (
@@ -12,6 +13,7 @@ from backend.app.models import (
     TranscriptSegment,
 )
 from backend.app.storage import LocalStorage
+from backend.app.rag import GlobalIndexHit
 
 
 class GlobalSearchServiceTest(unittest.TestCase):
@@ -113,6 +115,60 @@ class GlobalSearchServiceTest(unittest.TestCase):
         )
         self.assertTrue(index_path.exists())
 
+    def test_search_uses_optional_global_llama_index_backend(self) -> None:
+        self._save_session(
+            session_id="lec_vector_index",
+            title="通信原理第9讲",
+            course="通信原理",
+            text="信道编码用于提高通信可靠性。",
+            node_label="信道编码",
+        )
+        fake_service = _FakeGlobalIndexService(
+            hits=[
+                GlobalIndexHit(
+                    score=900,
+                    session_id="lec_vector_index",
+                    title="通信原理第9讲",
+                    course="通信原理",
+                    source_type="segment",
+                    source_id="lec_vector_index_seg_001",
+                    ts=1.0,
+                    text="[1.00s-3.00s] 信道编码用于提高通信可靠性。",
+                )
+            ]
+        )
+        service = GlobalSearchService(
+            storage=self.storage,
+            global_index_service=fake_service,
+        )
+
+        with patch.dict("os.environ", {"GLOBAL_SEARCH_BACKEND": "llamaindex"}):
+            response = service.search(GlobalSearchRequest(query="可靠性"))
+
+        self.assertIn("全局向量索引", response.answer)
+        self.assertEqual(response.hits[0].score, 900)
+        self.assertTrue(fake_service.was_called)
+
+    def test_search_falls_back_when_global_llama_index_fails(self) -> None:
+        self._save_session(
+            session_id="lec_vector_fallback",
+            title="通信原理第10讲",
+            course="通信原理",
+            text="卷积码也是一种信道编码。",
+            node_label="卷积码",
+        )
+        service = GlobalSearchService(
+            storage=self.storage,
+            global_index_service=_FailingGlobalIndexService(),
+        )
+
+        with patch.dict("os.environ", {"GLOBAL_SEARCH_BACKEND": "llamaindex"}):
+            response = service.search(GlobalSearchRequest(query="卷积码"))
+
+        self.assertTrue(response.hits)
+        self.assertEqual(response.hits[0].session_id, "lec_vector_fallback")
+        self.assertTrue(any("已回退词法搜索" in warning for warning in response.warnings))
+
     def test_search_returns_warning_when_no_history_exists(self) -> None:
         response = self.service.search(GlobalSearchRequest(query="采样定理"))
 
@@ -193,6 +249,21 @@ class GlobalSearchServiceTest(unittest.TestCase):
             context=context,
             knowledge_graph=graph,
         )
+
+
+class _FakeGlobalIndexService:
+    def __init__(self, hits: list[GlobalIndexHit]) -> None:
+        self.hits = hits
+        self.was_called = False
+
+    def search(self, **_: object) -> list[GlobalIndexHit]:
+        self.was_called = True
+        return self.hits
+
+
+class _FailingGlobalIndexService:
+    def search(self, **_: object) -> list[GlobalIndexHit]:
+        raise RuntimeError("fake global index failure")
 
 
 if __name__ == "__main__":

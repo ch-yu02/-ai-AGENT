@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptyState } from "./EmptyState";
+import type { GlobalSearchSourceRef } from "../types/agent";
 import type { KnowledgeEdge, KnowledgeGraphView, KnowledgeNode } from "../types/classroom";
 
 // 知识图谱面板。
@@ -14,11 +15,12 @@ import type { KnowledgeEdge, KnowledgeGraphView, KnowledgeNode } from "../types/
 // 数据适配层，把这里的 SVG 视图替换为专业图谱组件。
 type KnowledgeGraphPanelProps = {
   graph: KnowledgeGraphView;
+  focusedSource?: GlobalSearchSourceRef | null;
 };
 
 type GraphViewMode = "list" | "graph";
 
-export function KnowledgeGraphPanel({ graph }: KnowledgeGraphPanelProps) {
+export function KnowledgeGraphPanel({ graph, focusedSource }: KnowledgeGraphPanelProps) {
   // 用户可以在“列表”和“图形”之间切换。
   // 默认列表，因为它对 mock sender 联调最可靠：任何节点/边都能直接读出来。
   const [viewMode, setViewMode] = useState<GraphViewMode>("list");
@@ -65,9 +67,17 @@ export function KnowledgeGraphPanel({ graph }: KnowledgeGraphPanelProps) {
           </div>
 
           {viewMode === "list" ? (
-            <KnowledgeGraphList graph={graph} nodeById={nodeById} />
+            <KnowledgeGraphList
+              focusedSource={focusedSource}
+              graph={graph}
+              nodeById={nodeById}
+            />
           ) : (
-            <KnowledgeGraphCanvas graph={graph} nodeById={nodeById} />
+            <KnowledgeGraphCanvas
+              focusedSource={focusedSource}
+              graph={graph}
+              nodeById={nodeById}
+            />
           )}
         </div>
       )}
@@ -76,17 +86,38 @@ export function KnowledgeGraphPanel({ graph }: KnowledgeGraphPanelProps) {
 }
 
 type KnowledgeGraphListProps = {
+  focusedSource?: GlobalSearchSourceRef | null;
   graph: KnowledgeGraphView;
   nodeById: Map<string, KnowledgeNode>;
 };
 
-function KnowledgeGraphList({ graph, nodeById }: KnowledgeGraphListProps) {
+function KnowledgeGraphList({ focusedSource, graph, nodeById }: KnowledgeGraphListProps) {
+  const itemRefs = useRef<Record<string, HTMLElement | null>>({});
+  const focusedId = focusedGraphId(focusedSource);
+
+  useEffect(() => {
+    if (!focusedId) {
+      return;
+    }
+
+    itemRefs.current[focusedId]?.scrollIntoView({
+      block: "center",
+      behavior: "smooth",
+    });
+  }, [focusedId]);
+
   return (
     <div className="graph-list-view">
       {/* 节点区：展示概念名称、类型、重要度和摘要。 */}
       <div className="node-list">
         {graph.nodes.map((node) => (
-          <article className="node-item" key={node.node_id}>
+          <article
+            className={`node-item ${focusedId === node.node_id ? "focused-source" : ""}`}
+            key={node.node_id}
+            ref={(element) => {
+              itemRefs.current[node.node_id] = element;
+            }}
+          >
             <div className="node-title-row">
               <h3>{node.label}</h3>
               <span>{node.type || "concept"}</span>
@@ -107,7 +138,13 @@ function KnowledgeGraphList({ graph, nodeById }: KnowledgeGraphListProps) {
           <div className="edge-empty">等待关系</div>
         ) : (
           graph.edges.map((edge) => (
-            <div className="edge-item" key={edge.edge_id}>
+            <div
+              className={`edge-item ${focusedId === edge.edge_id ? "focused-source" : ""}`}
+              key={edge.edge_id}
+              ref={(element) => {
+                itemRefs.current[edge.edge_id] = element;
+              }}
+            >
               {nodeLabel(edge.source, nodeById)} <span>{edge.relation}</span>{" "}
               {nodeLabel(edge.target, nodeById)}
             </div>
@@ -119,11 +156,12 @@ function KnowledgeGraphList({ graph, nodeById }: KnowledgeGraphListProps) {
 }
 
 type KnowledgeGraphCanvasProps = {
+  focusedSource?: GlobalSearchSourceRef | null;
   graph: KnowledgeGraphView;
   nodeById: Map<string, KnowledgeNode>;
 };
 
-function KnowledgeGraphCanvas({ graph, nodeById }: KnowledgeGraphCanvasProps) {
+function KnowledgeGraphCanvas({ focusedSource, graph, nodeById }: KnowledgeGraphCanvasProps) {
   // 轻量 SVG 布局。
   //
   // 对 MVP 来说，我们不需要复杂的力导向布局；只需要 mock sender 一推知识点，
@@ -132,6 +170,7 @@ function KnowledgeGraphCanvas({ graph, nodeById }: KnowledgeGraphCanvasProps) {
   // - 节点多时不会互相完全重叠。
   // - 计算是纯函数，不需要 canvas 生命周期或第三方依赖。
   const layout = useMemo(() => createGraphLayout(graph.nodes), [graph.nodes]);
+  const focusedId = focusedGraphId(focusedSource);
 
   return (
     <div className="graph-canvas" aria-label="知识图谱图形视图">
@@ -159,7 +198,10 @@ function KnowledgeGraphCanvas({ graph, nodeById }: KnowledgeGraphCanvasProps) {
           }
 
           return (
-            <g className="graph-edge" key={edge.edge_id}>
+            <g
+              className={`graph-edge ${focusedId === edge.edge_id ? "focused-source" : ""}`}
+              key={edge.edge_id}
+            >
               <line
                 markerEnd="url(#arrow-head)"
                 x1={source.x}
@@ -182,7 +224,10 @@ function KnowledgeGraphCanvas({ graph, nodeById }: KnowledgeGraphCanvasProps) {
           }
 
           return (
-            <g className="graph-node" key={node.node_id}>
+            <g
+              className={`graph-node ${focusedId === node.node_id ? "focused-source" : ""}`}
+              key={node.node_id}
+            >
               <circle cx={point.x} cy={point.y} r={nodeRadius(node)} />
               <text x={point.x} y={point.y + 4}>
                 {truncateLabel(node.label)}
@@ -198,6 +243,16 @@ function KnowledgeGraphCanvas({ graph, nodeById }: KnowledgeGraphCanvasProps) {
       </div>
     </div>
   );
+}
+
+function focusedGraphId(focusedSource?: GlobalSearchSourceRef | null): string | null {
+  if (!focusedSource) {
+    return null;
+  }
+  if (focusedSource.type === "knowledge_node" || focusedSource.type === "knowledge_edge") {
+    return focusedSource.id;
+  }
+  return null;
 }
 
 function createGraphLayout(nodes: KnowledgeNode[]): Map<string, { x: number; y: number }> {

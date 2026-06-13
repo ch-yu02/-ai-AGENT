@@ -27,11 +27,14 @@ class LLMSettings:
 
     @property
     def enabled(self) -> bool:
-        """是否启用云端模型。
+        """是否启用模型客户端。
 
-        只要没有 API key，就视为禁用。这样开发、测试和离线演示都不会误触发
-        网络请求。
+        云端 provider 仍要求 API key；``local`` provider 允许不配置 key，因为
+        Ollama、vLLM 或 llama.cpp 暴露的 OpenAI-compatible 本地接口通常不需要
+        鉴权。是否真的联网/连本机服务，由用户显式设置 provider 决定。
         """
+        if self.provider == "local":
+            return bool(self.base_url)
         return bool(self.api_key)
 
 
@@ -40,7 +43,7 @@ def load_llm_settings() -> LLMSettings:
 
     支持的变量：
     - ``LLM_PROVIDER``：默认 deepseek。
-    - ``LLM_API_KEY``：为空时禁用云端模型。
+    - ``LLM_API_KEY``：云端 provider 必填；local provider 可为空。
     - ``LLM_MODEL``：为空时按 provider 选择默认模型。
     - ``LLM_BASE_URL``：为空时按 provider 选择 OpenAI-compatible 地址。
     - ``LLM_TIMEOUT_SECONDS``：默认 30。
@@ -69,6 +72,8 @@ def _default_model(provider: str) -> str:
         return "gpt-4o-mini"
     if provider == "deepseek":
         return "deepseek-chat"
+    if provider == "local":
+        return "llama3.1"
     return "chat"
 
 
@@ -78,6 +83,8 @@ def _default_base_url(provider: str) -> str:
         return "https://api.openai.com/v1"
     if provider == "deepseek":
         return "https://api.deepseek.com/v1"
+    if provider == "local":
+        return "http://127.0.0.1:11434/v1"
     return "https://api.deepseek.com/v1"
 
 

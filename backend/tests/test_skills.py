@@ -8,7 +8,8 @@ from backend.app.models import (
     KnowledgeTree,
     TranscriptSegment,
 )
-from backend.app.skills import QuizMasterSkill, SummarizerSkill, TodoDetectiveSkill
+from backend.app.rag import QueryResult, RagSourceRef
+from backend.app.skills import QaSkill, QuizMasterSkill, SummarizerSkill, TodoDetectiveSkill
 
 
 class FakeLLMClient:
@@ -28,6 +29,14 @@ class FakeLLMClient:
         if self.error is not None:
             raise self.error
         return self.payload
+
+
+class FakeQueryService:
+    def __init__(self, result: QueryResult) -> None:
+        self.result = result
+
+    def query(self, prompt, documents, limit=5):  # type: ignore[no-untyped-def]
+        return self.result
 
 
 class SkillsTest(unittest.TestCase):
@@ -149,6 +158,76 @@ class SkillsTest(unittest.TestCase):
 
         self.assertIn("采样定理", result.answer)
         self.assertTrue(any("已回退规则版" in warning for warning in result.warnings))
+
+    def test_qa_grounded_mode_uses_llm_supplement_with_sources(self) -> None:
+        qa = QaSkill(
+            query_service=FakeQueryService(
+                QueryResult(
+                    answer="根据课堂资料：采样定理描述连续信号采样恢复条件。",
+                    source_refs=[
+                        RagSourceRef(
+                            type="segment",
+                            id="seg_001",
+                            ts=1.0,
+                            text="作业是完成第三题，并预习采样定理。",
+                        )
+                    ],
+                    warnings=[],
+                )
+            ),
+            llm_client=FakeLLMClient(
+                {
+                    "answer": (
+                        "根据课堂内容：采样定理描述连续信号采样恢复条件。\n"
+                        "补充解释：它通常要求采样频率满足奈奎斯特条件。"
+                    )
+                }
+            ),
+        )
+
+        result = qa.run(
+            self.session_id,
+            "采样定理为什么重要？",
+            self.context,
+            self.graph,
+            answer_mode="grounded",
+        )
+
+        self.assertIn("补充解释", result.answer)
+        self.assertEqual(result.source_refs[0].id, "seg_001")
+        self.assertTrue(any("模型通用知识补充" in warning for warning in result.warnings))
+
+    def test_qa_grounded_mode_falls_back_without_llm(self) -> None:
+        qa = QaSkill(
+            query_service=FakeQueryService(
+                QueryResult(
+                    answer="根据课堂资料：采样定理描述连续信号采样恢复条件。",
+                    source_refs=[
+                        RagSourceRef(
+                            type="segment",
+                            id="seg_001",
+                            ts=1.0,
+                            text="作业是完成第三题，并预习采样定理。",
+                        )
+                    ],
+                    warnings=[],
+                )
+            ),
+            llm_client=None,
+        )
+        # 构造后手动关闭默认环境客户端，避免开发者本机配置真实 LLM 时影响测试。
+        qa.llm_client = None
+
+        result = qa.run(
+            self.session_id,
+            "采样定理为什么重要？",
+            self.context,
+            self.graph,
+            answer_mode="grounded",
+        )
+
+        self.assertIn("采样定理", result.answer)
+        self.assertTrue(any("未配置 LLM" in warning for warning in result.warnings))
 
 
 if __name__ == "__main__":

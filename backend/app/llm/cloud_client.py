@@ -110,13 +110,16 @@ class CloudLLMClient:
 
     def _post_json(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         """发送 JSON POST 请求并返回 JSON object。"""
+        headers = {"Content-Type": "application/json"}
+        # 本地 OpenAI-compatible 服务通常不需要 API key；云端 provider 才附加
+        # Authorization。这样 ``LLM_PROVIDER=local`` 可以直接连 Ollama/vLLM。
+        if self.settings.api_key:
+            headers["Authorization"] = f"Bearer {self.settings.api_key}"
+
         request = urllib.request.Request(
             f"{self.settings.base_url}{path}",
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {self.settings.api_key}",
-                "Content-Type": "application/json",
-            },
+            headers=headers,
             method="POST",
         )
         try:

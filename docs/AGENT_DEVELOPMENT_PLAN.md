@@ -9,15 +9,17 @@
 
 - 实时课堂：创建/结束课堂、接收事件、WebSocket 推送字幕、图片/OCR、时间线和知识图谱。
 - 历史课堂：结束后保存本地文件，前端可打开历史详情并删除本地历史。
-- 单节课堂 Agent：`POST /agent/chat` 支持 `qa` / `summary` / `todos` / `quiz`。
+- 单节课堂 Agent：`POST /agent/chat` 支持 `qa` / `summary` / `todos` / `quiz`；QA 支持 strict 与 grounded 两种答疑模式。
 - 课后产物：
   - 结束课堂自动生成 `summary.md` 和 `todos.json`。
   - `quiz.json` 只在用户主动生成自测题后保存。
   - Agent 对话保存到 `agent_messages.json`，打开历史课堂时恢复。
-- 可选 Cloud LLM：配置 `LLM_API_KEY` 后，summary/todos/quiz 优先尝试云端模型，失败时回退规则版。
+- 可选 LLM：云端 provider 配置 `LLM_API_KEY` 后启用；`LLM_PROVIDER=local` 可连接本地 OpenAI-compatible 服务。
 - 可选单节课 LlamaIndex：`RAG_QUERY_BACKEND=llamaindex` 时启用，结束课堂后尝试保存 `llama_index/`，查询失败时回退词法检索。
 - 跨课堂搜索第一版：`POST /agent/search` 可搜索已保存历史课堂，支持课程和日期过滤，前端可打开命中课堂并定位来源。
-- 本地全局搜索快照：跨课堂搜索会写出 `data/indexes/global/documents.json`，但目前仍是词法搜索快照，不是真正向量索引。
+- 可选全局 LlamaIndex：`GLOBAL_SEARCH_BACKEND=llamaindex` 时启用，使用 `data/indexes/global/llama_index/` 作为全局向量索引目录，失败时回退词法搜索。
+- URL 深链接：历史课堂支持 `session_id/source_type/source_id` query，刷新或复制链接后可恢复定位。
+- Provider smoke：`scripts/dev.sh llm-smoke` 可手动验证真实 LLM provider。
 
 主要运行时产物：
 
@@ -33,6 +35,8 @@ data/sessions/{session_id}/agent_messages.json
 data/sessions/{session_id}/agent_artifacts.json
 data/sessions/{session_id}/llama_index/
 data/indexes/global/documents.json
+data/indexes/global/manifest.json
+data/indexes/global/llama_index/
 ```
 
 ## 当前接口
@@ -47,11 +51,16 @@ data/indexes/global/documents.json
 {
   "session_id": "lec_xxx",
   "prompt": "帮我总结这节课的重点",
-  "mode": "auto"
+  "mode": "auto",
+  "answer_mode": "strict"
 }
 ```
 
 `mode` 可选：`auto` / `qa` / `summary` / `todos` / `quiz`。
+`answer_mode` 只对 QA 生效：
+
+- `strict`：默认模式，只依据课堂资料回答。
+- `grounded`：先依据课堂资料，再允许 LLM 使用通用知识补充解释；返回 warning 标明包含模型补充。
 
 响应核心字段：
 
@@ -97,6 +106,7 @@ backend/app/agent/
 
 backend/app/rag/
   documents.py
+  global_index_service.py
   query_service.py
   llama_query_service.py
   service_factory.py
@@ -138,27 +148,28 @@ frontend/src/types/agent.ts
 - 用户主动点击或输入后才生成 quiz。
 - Agent 对话在历史课堂重新打开后可以恢复。
 - 全局搜索结果可以打开对应历史课堂，并尽量高亮字幕、图片/OCR 或时间线来源。
+- URL query 可恢复历史课堂和来源定位，例如
+  `?session_id=lec_xxx&source_type=segment&source_id=seg_001`。
+- 知识图谱节点/边也支持搜索来源高亮。
 
-## 未完成能力
+## 剩余能力
 
-### 真实全局向量索引
+### 已完成：真实全局向量索引入口
 
-当前只有 `data/indexes/global/documents.json` 文档快照，搜索仍是词法评分。
+当前已经有可选全局 LlamaIndex 主链路：
 
-未完成原因：
+- 默认 `GLOBAL_SEARCH_BACKEND=lexical`，继续使用确定性词法搜索。
+- 设置 `GLOBAL_SEARCH_BACKEND=llamaindex` 后，`POST /agent/search` 会优先构建或加载 `data/indexes/global/llama_index/`。
+- `manifest.json` 记录文档快照指纹，历史课堂变化后自动重建索引。
+- 索引不可用、依赖未安装或 provider 失败时，自动回退词法搜索并返回 warning。
 
-- 需要选择 embedding provider 和索引持久化策略。
-- LlamaIndex、embedding、本地模型依赖较重，不适合作为默认硬依赖。
-- 历史课堂删除后，全局索引也要同步更新或重建。
+仍可增强：
 
-建议实现：
+1. 增加真实 embedding provider 的安装说明。
+2. 为全局索引增加独立 rebuild 命令，避免首次搜索承担全部构建成本。
+3. 增加更多语义搜索评测 fixture。
 
-1. 新增 `backend/app/rag/global_index_service.py`。
-2. 使用 `data/indexes/global/` 保存真正 LlamaIndex 全局索引。
-3. `POST /agent/search` 优先查全局向量索引，失败时回退当前词法搜索。
-4. 删除历史课堂后同步重建或标记相关文档失效。
-
-### 录制中增量索引
+### 暂缓：录制中增量索引
 
 当前单节课索引主要在结束课堂后持久化；录制中 QA 仍依赖内存文档和当前查询服务。
 
@@ -175,52 +186,47 @@ frontend/src/types/agent.ts
 3. 结束课堂时构建最终完整索引。
 4. 后续可把刷新放入后台任务队列。
 
-### 真实 Provider Smoke Test
+本阶段按需求暂不开发。
 
-当前 LLM 和 LlamaIndex 测试都使用 fake client，不访问真实 provider。
+### 已完成：真实 Provider Smoke Test
 
-未完成原因：
+当前已增加：
 
-- 真实调用需要 API key、网络、额度和模型版本。
-- 不同 provider 的 JSON 输出稳定性不同。
-- 云端调用涉及课堂隐私，需要明确开关和文档。
+- `backend/scripts/llm_smoke.py`
+- `scripts/dev.sh llm-smoke`
 
-建议实现：
+行为：
 
-1. 增加 `scripts/dev.sh llm-smoke`。
-2. 无 `LLM_API_KEY` 时跳过并提示。
-3. 有 key 时用固定课堂 fixture 测 summary/todos/quiz。
-4. 检查结构化输出，不合格时确认 fallback 和 warning。
+- 云端 provider 无 `LLM_API_KEY` 时跳过。
+- 有真实 provider 或 `LLM_PROVIDER=local` 时，用固定课堂 fixture 测 summary/todos/quiz。
+- 任一技能回退或产生 warning 时，脚本返回失败，便于手动联调定位。
 
-### URL 深链接
+### 已完成：URL 深链接
 
-当前搜索结果可以在当前页面打开历史课堂并高亮来源，但刷新页面后状态会丢失。
+当前已支持：
 
-未完成原因：
+- 打开历史课堂时写入 `?session_id=...`。
+- 从搜索命中打开时写入 `source_type`、`source_id` 和可选 `ts`。
+- 页面首次加载会读取 URL，自动打开历史课堂并定位来源。
+- 字幕、图片/OCR、时间线、知识图谱节点/边都可以接收 focused source。
 
-- 前端还没有路由层。
-- 当前历史课堂和 source_ref 只存在 App 内存状态里。
-- 图谱节点/边的精确聚焦还不完整。
-
-建议实现：
+示例：
 
 ```text
 /?session_id=lec_xxx&source_type=segment&source_id=seg_001
 ```
 
-App 启动时读取 URL，自动打开历史课堂，并把 focused source 传给对应面板。
+### 已完成：本地模型模式入口
 
-### 本地模型模式
+当前已支持：
 
-当前支持规则版 fallback 和 OpenAI-compatible 云端模型，还没有正式接本地 LLM/embedding。
+- `LLM_PROVIDER=local`
+- `LLM_BASE_URL=http://127.0.0.1:11434/v1`
+- `LLM_MODEL=llama3.1`
+- 本地 provider 允许 `LLM_API_KEY` 为空。
+- HTTP 请求无 key 时不会发送空 Authorization header。
 
-未完成原因：
-
-- 本地模型运行时差异大，例如 Ollama、vLLM、llama.cpp。
-- 本地 embedding 依赖和硬件要求较重。
-- 本地模型的结构化 JSON 稳定性需要单独验证。
-
-建议实现：
+示例：
 
 ```text
 LLM_PROVIDER=local
@@ -228,16 +234,20 @@ LLM_BASE_URL=http://127.0.0.1:11434/v1
 LLM_MODEL=...
 ```
 
-先支持 OpenAI-compatible 本地服务，再补充 smoke 文档，不放入默认测试。
+仍可增强：
+
+1. 补充 Ollama/vLLM 具体启动示例。
+2. 增加本地 embedding provider 文档。
+3. 为本地模型输出稳定性建立手动评测样例。
 
 ## 下一步顺序
 
 建议按验证收益优先：
 
-1. 增加真实 LLM smoke 脚本和使用文档。
-2. 做 URL 深链接和图谱来源高亮。
-3. 做全局 LlamaIndex 向量索引。
-4. 做录制中批量增量索引。
-5. 做本地模型模式文档和 smoke test。
+1. 补充真实 LlamaIndex/embedding provider 安装文档。
+2. 增加全局索引 rebuild 命令。
+3. 增加 URL 深链接的前端测试覆盖。
+4. 增加 Ollama/vLLM 本地模型 smoke 文档。
+5. 录制中批量增量索引继续暂缓。
 
 默认测试仍应保持不依赖网络、不依赖真实 API key、不依赖重量级本地模型。

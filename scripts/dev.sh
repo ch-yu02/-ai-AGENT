@@ -35,6 +35,7 @@ Commands:
   build            Type-check and build frontend
   install-backend  Install backend Python dependencies
   mock             Send mock events to an existing frontend-created session
+  llm-smoke        Manually test configured LLM provider with fixed classroom data
 
 Environment:
   BACKEND_HOST     Backend host, default 127.0.0.1
@@ -160,6 +161,12 @@ run_mock() {
   "$PYTHON_BIN" backend/scripts/mock_sender.py "${@:2}"
 }
 
+run_llm_smoke() {
+  require_backend_venv
+  cd "$ROOT_DIR"
+  "$PYTHON_BIN" -m backend.scripts.llm_smoke
+}
+
 command="${1:-help}"
 
 case "$command" in
@@ -193,6 +200,9 @@ case "$command" in
     ;;
   mock)
     run_mock "$@"
+    ;;
+  llm-smoke)
+    run_llm_smoke
     ;;
   help|-h|--help)
     usage

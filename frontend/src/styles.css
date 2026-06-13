@@ -565,6 +565,18 @@ button:disabled {
   padding: 10px 12px;
 }
 
+.node-item.focused-source {
+  border-radius: 8px;
+  margin: 4px 0;
+  padding: 14px 12px;
+}
+
+.edge-item.focused-source {
+  background: #fff7e6;
+  border-color: #f2b84b;
+  box-shadow: inset 4px 0 0 #d9822b;
+}
+
 .edge-empty {
   color: #7a8698;
   padding: 8px 0;
@@ -594,6 +606,11 @@ button:disabled {
   stroke-width: 2;
 }
 
+.graph-edge.focused-source line {
+  stroke: #d9822b;
+  stroke-width: 4;
+}
+
 .graph-edge text {
   fill: #4f5f73;
   font-size: 12px;
@@ -607,6 +624,12 @@ button:disabled {
   fill: #eaf2ff;
   stroke: #1f6feb;
   stroke-width: 2;
+}
+
+.graph-node.focused-source circle {
+  fill: #fff7e6;
+  stroke: #d9822b;
+  stroke-width: 4;
 }
 
 .graph-node text {
@@ -669,7 +692,7 @@ button:disabled {
 .agent-body {
   display: grid;
   gap: 12px;
-  grid-template-rows: auto minmax(180px, 1fr) auto;
+  grid-template-rows: auto auto minmax(180px, 1fr) auto;
   min-height: 0;
   padding: 14px 18px 18px;
 }
@@ -682,6 +705,20 @@ button:disabled {
 
 .agent-quick-row {
   flex-wrap: wrap;
+}
+
+.agent-mode-toggle {
+  align-items: center;
+  color: #4f5f73;
+  display: inline-flex;
+  font-size: 13px;
+  gap: 8px;
+}
+
+.agent-mode-toggle input {
+  height: 16px;
+  margin: 0;
+  width: 16px;
 }
 
 .agent-messages {

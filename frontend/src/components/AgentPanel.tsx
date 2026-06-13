@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { chatWithAgent } from "../services/agentApi";
 import { ApiError } from "../services/api";
 import type {
+  AgentAnswerMode,
   AgentArtifact,
   AgentIntent,
   AgentMessage,
@@ -47,6 +48,7 @@ export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps)
   // classroomReducer，因为 Agent 对话不参与实时事件合并。
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<AgentMessage[]>([]);
+  const [answerMode, setAnswerMode] = useState<AgentAnswerMode>("strict");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -79,6 +81,7 @@ export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps)
         session_id: session.session_id,
         prompt: trimmedPrompt,
         mode,
+        answer_mode: mode === "qa" || mode === "auto" ? answerMode : "strict",
       });
       setMessages((current) => [
         ...current,
@@ -123,6 +126,18 @@ export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps)
             </button>
           ))}
         </div>
+
+        <label className="agent-mode-toggle">
+          <input
+            checked={answerMode === "grounded"}
+            disabled={!session || isLoading}
+            onChange={(event) =>
+              setAnswerMode(event.target.checked ? "grounded" : "strict")
+            }
+            type="checkbox"
+          />
+          <span>允许模型补充解释</span>
+        </label>
 
         <div className="agent-messages" aria-live="polite">
           {/* aria-live 让辅助技术能感知新回答。这里不用复杂 Markdown 渲染，

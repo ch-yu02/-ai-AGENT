@@ -7,6 +7,7 @@
 """
 
 from .documents import RagDocument, RagDocumentType, build_session_documents
+from .global_index_service import GlobalIndexHit, GlobalLlamaIndexService
 from .index_manager import IndexManager, index_manager
 from .llama_query_service import LlamaIndexQueryService
 from .query_service import QueryResult, QueryService, RagSourceRef
@@ -15,6 +16,8 @@ from .service_factory import RagQueryService, build_query_service
 
 __all__ = [
     "IndexManager",
+    "GlobalIndexHit",
+    "GlobalLlamaIndexService",
     "LlamaIndexQueryService",
     "QueryResult",
     "QueryService",

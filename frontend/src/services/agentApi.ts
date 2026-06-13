@@ -16,6 +16,8 @@ export function chatWithAgent(request: AgentChatRequest): Promise<AgentChatRespo
     body: JSON.stringify({
       // 默认自动路由，允许调用方通过 request.mode 覆盖为 summary/todos/quiz/qa。
       mode: "auto",
+      // 默认严格依据课堂资料；用户在 AgentPanel 开启“模型补充”后才会切换。
+      answer_mode: "strict",
       ...request,
     }),
   });

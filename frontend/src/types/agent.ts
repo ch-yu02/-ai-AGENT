@@ -4,6 +4,8 @@
 // docs/API_SCHEMA.md、后端 schemas.py 和前端类型可以一一对照，减少联调歧义。
 
 export type AgentIntent = "auto" | "qa" | "summary" | "todos" | "quiz";
+// strict 只基于课堂资料；grounded 允许模型结合课堂来源做补充解释。
+export type AgentAnswerMode = "strict" | "grounded";
 // 后端已经解析出的最终意图。响应里不会返回自动路由模式。
 export type ResolvedAgentIntent = "qa" | "summary" | "todos" | "quiz";
 
@@ -14,6 +16,8 @@ export type AgentChatRequest = {
   prompt: string;
   // 自动路由模式表示交给后端 IntentRouter；快捷按钮会传显式模式。
   mode?: AgentIntent;
+  // 只对 qa 生效。summary/todos/quiz 使用各自技能策略。
+  answer_mode?: AgentAnswerMode;
 };
 
 export type AgentArtifact = {

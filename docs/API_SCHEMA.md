@@ -207,7 +207,83 @@ Content-Type: application/json
 | --- | --- |
 | `404` | session、context 或 knowledge graph 不存在 |
 
-## 4. 实时事件接口
+## 4. Agent 接口
+
+### POST /agent/chat
+
+对当前录制中课堂或已保存历史课堂进行问答、总结、待办提取和自测题生成。
+
+请求：
+
+```json
+{
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "prompt": "采样定理为什么重要？",
+  "mode": "auto",
+  "answer_mode": "grounded"
+}
+```
+
+字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `session_id` | string | 是 | 课堂 ID，可以是录制中课堂或历史课堂 |
+| `prompt` | string | 是 | 用户自然语言输入 |
+| `mode` | string | 否 | `auto` / `qa` / `summary` / `todos` / `quiz`，默认 `auto` |
+| `answer_mode` | string | 否 | 只对 QA 生效。`strict` 只依据课堂资料；`grounded` 允许模型补充通用解释 |
+
+响应：
+
+```json
+{
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "intent": "qa",
+  "answer": "根据课堂内容：...\n补充解释：...",
+  "artifacts": [],
+  "source_refs": [
+    {
+      "type": "segment",
+      "id": "seg_001",
+      "ts": 1.0,
+      "text": "采样定理说明..."
+    }
+  ],
+  "warnings": [
+    "回答包含模型通用知识补充；课堂依据见来源引用。"
+  ]
+}
+```
+
+说明：
+
+- `strict` 是默认答疑模式，适合复习、笔记和考试场景。
+- `grounded` 仍要求先找到课堂来源；没有课堂依据时不会退化成开放域问答。
+- `summary` / `todos` / `quiz` 会忽略 `answer_mode`，继续由各自技能控制是否使用 LLM。
+
+### POST /agent/search
+
+跨课堂搜索已保存历史课堂。
+
+请求：
+
+```json
+{
+  "query": "哪节课讲过采样定理",
+  "course": "通信原理",
+  "date_from": "2026-06-01",
+  "date_to": "2026-06-09",
+  "limit": 8
+}
+```
+
+响应核心字段：
+
+- `answer`：搜索结果摘要。
+- `hits`：命中来源，包含 `session_id`、课堂标题、课程、分数和 `source_ref`。
+- `warnings`：坏历史目录跳过、LlamaIndex 回退等非致命提示。
+
+## 5. 实时事件接口
 
 ### POST /events
 
@@ -260,9 +336,9 @@ knowledge.extraction
 | `404` | session、context 或 knowledge graph 不存在 |
 | `409` | session 已结束，不再接收实时事件 |
 
-## 5. 事件 Payload
+## 6. 事件 Payload
 
-### 5.1 transcript.segment
+### 6.1 transcript.segment
 
 ASR 模块发送的实时字幕片段。
 
@@ -301,7 +377,7 @@ payload 字段：
 | `source` | string/null | 否 | 来源模块，例如 `"whisper"` |
 | `created_at` | string | 否 | 创建时间，缺省时后端补齐 |
 
-### 5.2 image.capture
+### 6.2 image.capture
 
 摄像头、屏幕截图、OCR 或 VLM 模块发送的视觉事件。
 
@@ -340,7 +416,7 @@ payload 字段：
 | `ocr_text` | string/null | 否 | OCR 文本 |
 | `caption` | string/null | 否 | VLM 图片描述 |
 
-### 5.3 knowledge.extraction
+### 6.3 knowledge.extraction
 
 SLM 或知识抽取模块发送的一次实体/关系抽取结果。
 
@@ -415,7 +491,7 @@ payload 字段：
 注意：知识图谱节点按实体 `name` 规范化后去重。若 relation 引用了
 entities 中没有出现的实体，后端会自动创建占位节点。
 
-## 6. WebSocket
+## 7. WebSocket
 
 ### WS /ws/{session_id}
 
@@ -569,7 +645,7 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 }
 ```
 
-## 7. 知识图谱数据
+## 8. 知识图谱数据
 
 完整知识图谱 `KnowledgeTree` 会在结束课堂时保存为
 `knowledge_graph.json`。
@@ -623,7 +699,7 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 前端实时展示时优先消费 WebSocket 的 `graph_patch`；课后/历史展示时读取
 完整 `knowledge_graph.json`。
 
-## 8. 本地保存文件
+## 9. 本地保存文件
 
 结束课堂后，后端写入：
 
@@ -650,7 +726,7 @@ GET /history
 GET /history/{session_id}
 ```
 
-## 9. Mock Sender
+## 10. Mock Sender
 
 mock sender 用于在真实 ASR/OCR/SLM 未接入时，自动向后端喂一组中文课堂
 模拟数据。它不会创建课堂；课堂开始必须先从前端页面手动发起。
@@ -693,7 +769,7 @@ mock sender 当前会模拟：
 4. 发送多条 `knowledge.extraction`，驱动知识图谱增量更新。
 5. 默认结束课堂并保存本地文件；加 `--no-end` 时保留 recording 状态。
 
-## 10. 前端接入建议
+## 11. 前端接入建议
 
 实时课堂页面建议流程：
 

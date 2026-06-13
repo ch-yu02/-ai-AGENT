@@ -139,6 +139,7 @@ class ClassroomAgent:
                 request.prompt,
                 data.context,
                 data.knowledge_graph,
+                answer_mode=request.answer_mode,
             )
 
         response = self._response_from_skill_result(request.session_id, intent, result)
@@ -304,6 +305,7 @@ class ClassroomAgent:
                 {
                     "role": "user",
                     "content": request.prompt,
+                    "answer_mode": request.answer_mode,
                 },
                 {
                     "role": "assistant",

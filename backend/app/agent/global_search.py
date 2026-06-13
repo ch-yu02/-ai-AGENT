@@ -10,6 +10,7 @@ Phase 7 的目标是让用户能问“之前哪节课讲过某个知识点”。
 - API 契约先稳定下来，后续把内部实现替换为全局 LlamaIndex 索引时，前端不用改。
 """
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -21,7 +22,12 @@ from backend.app.models import (
     TimelineItem,
     TranscriptSegment,
 )
-from backend.app.rag import RagDocument, build_session_documents
+from backend.app.rag import (
+    GlobalIndexHit,
+    GlobalLlamaIndexService,
+    RagDocument,
+    build_session_documents,
+)
 from backend.app.storage import LocalStorage
 
 from .schemas import (
@@ -46,8 +52,13 @@ class _ScoredDocument:
 class GlobalSearchService:
     """在所有已保存历史课堂中搜索课堂资料。"""
 
-    def __init__(self, storage: LocalStorage) -> None:
+    def __init__(
+        self,
+        storage: LocalStorage,
+        global_index_service: GlobalLlamaIndexService | None = None,
+    ) -> None:
         self.storage = storage
+        self._global_index_service = global_index_service
 
     def search(self, request: GlobalSearchRequest) -> GlobalSearchResponse:
         """执行跨课堂搜索。
@@ -102,6 +113,7 @@ class GlobalSearchService:
         scored: list[_ScoredDocument] = []
         warnings: list[str] = []
         global_index_documents: list[dict] = []
+        global_rag_documents: list[RagDocument] = []
 
         for summary in summaries:
             session_id = summary.session.session_id
@@ -112,8 +124,17 @@ class GlobalSearchService:
                 continue
 
             context = self._context_from_history(session_id, detail.timeline)
-            documents = build_session_documents(context, detail.knowledge_graph)
+            documents = [
+                self._enrich_global_document(
+                    session_id=session_id,
+                    title=detail.session.title,
+                    course=detail.session.course,
+                    document=document,
+                )
+                for document in build_session_documents(context, detail.knowledge_graph)
+            ]
             for document in documents:
+                global_rag_documents.append(document)
                 global_index_documents.append(
                     self._global_index_record(
                         session_id=session_id,
@@ -137,6 +158,16 @@ class GlobalSearchService:
 
         self.storage.save_global_search_index(global_index_documents)
 
+        vector_response = self._search_global_index(
+            query=query,
+            records=global_index_documents,
+            documents=global_rag_documents,
+            limit=request.limit,
+            warnings=warnings,
+        )
+        if vector_response is not None:
+            return vector_response
+
         ranked = sorted(scored, key=lambda item: item.score, reverse=True)
         hits = [self._hit(item) for item in ranked[: request.limit]]
         if not hits:
@@ -149,6 +180,55 @@ class GlobalSearchService:
             )
 
         answer = "我在这些历史课堂中找到了相关内容：\n" + "\n".join(
+            f"- {hit.course or '未命名课程'} / {hit.title}: {hit.source_ref.text}"
+            for hit in hits[:5]
+        )
+        return GlobalSearchResponse(
+            query=query,
+            answer=answer,
+            hits=hits,
+            warnings=warnings,
+        )
+
+    def _search_global_index(
+        self,
+        *,
+        query: str,
+        records: list[dict],
+        documents: list[RagDocument],
+        limit: int,
+        warnings: list[str],
+    ) -> GlobalSearchResponse | None:
+        """按需使用全局 LlamaIndex 索引查询。
+
+        只有 ``GLOBAL_SEARCH_BACKEND=llamaindex`` 时才会进入该路径。失败或无命中
+        都返回 None，让调用方继续使用稳定的词法搜索。这样可选依赖、真实
+        embedding provider 或本地模型配置不完整时，不会影响默认功能。
+        """
+        backend = os.getenv("GLOBAL_SEARCH_BACKEND", "lexical").strip().lower()
+        if backend != "llamaindex":
+            return None
+
+        try:
+            service = self._global_index_service or GlobalLlamaIndexService(
+                index_root=self.storage.global_index_dir(),
+            )
+            index_hits = service.search(
+                query=query,
+                records=records,
+                documents=documents,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001 - 可选依赖失败必须回退词法搜索。
+            warnings.append(f"全局 LlamaIndex 索引不可用，已回退词法搜索：{exc}")
+            return None
+
+        if not index_hits:
+            warnings.append("全局 LlamaIndex 索引未返回命中，已回退词法搜索。")
+            return None
+
+        hits = [self._hit_from_global_index(item) for item in index_hits[:limit]]
+        answer = "我在全局向量索引中找到了相关历史课堂内容：\n" + "\n".join(
             f"- {hit.course or '未命名课程'} / {hit.title}: {hit.source_ref.text}"
             for hit in hits[:5]
         )
@@ -224,6 +304,43 @@ class GlobalSearchService:
                 text=item.document.text,
             ),
         )
+
+    def _hit_from_global_index(self, item: GlobalIndexHit) -> GlobalSearchHit:
+        """把全局向量索引命中转换为 API 响应模型。"""
+        return GlobalSearchHit(
+            session_id=item.session_id,
+            title=item.title,
+            course=item.course,
+            score=item.score,
+            source_ref=GlobalSearchSourceRef(
+                type=item.source_type,
+                id=item.source_id,
+                ts=item.ts,
+                text=item.text,
+            ),
+        )
+
+    def _enrich_global_document(
+        self,
+        *,
+        session_id: str,
+        title: str,
+        course: str | None,
+        document: RagDocument,
+    ) -> RagDocument:
+        """给 RAG 文档补充跨课堂搜索需要的课堂元信息。
+
+        单节课 RAG 文档只需要知道来源对象；全局索引还必须能从命中直接恢复
+        ``session_id``、课堂标题和课程名。因此这里在进入全局索引前补充 metadata，
+        不改变 ``build_session_documents`` 的通用职责。
+        """
+        metadata = {
+            **document.metadata,
+            "session_id": session_id,
+            "title": title,
+            "course": course,
+        }
+        return document.model_copy(update={"metadata": metadata})
 
     def _global_index_record(
         self,

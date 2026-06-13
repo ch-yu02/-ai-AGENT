@@ -20,6 +20,9 @@ from pydantic import BaseModel, Field
 AgentIntent = Literal["auto", "qa", "summary", "todos", "quiz"]
 """前端可请求的模式。``auto`` 表示让后端根据 prompt 自动判断意图。"""
 
+AgentAnswerMode = Literal["strict", "grounded"]
+"""问答依据模式。strict 只用课堂资料；grounded 允许模型补充通用解释。"""
+
 ResolvedAgentIntent = Literal["qa", "summary", "todos", "quiz"]
 """后端最终执行的技能类型，不包含 ``auto``。"""
 
@@ -41,6 +44,8 @@ class AgentChatRequest(BaseModel):
     """用户自然语言输入。第一版只处理课堂数据相关问题。"""
     mode: AgentIntent = "auto"
     """路由模式：auto 或显式技能类型。"""
+    answer_mode: AgentAnswerMode = "strict"
+    """问答依据模式。只对 qa 生效，summary/todos/quiz 仍由各自技能决定。"""
 
 
 class AgentArtifact(BaseModel):
@@ -159,6 +164,7 @@ class GlobalSearchResponse(BaseModel):
 
 __all__ = [
     "AgentArtifact",
+    "AgentAnswerMode",
     "AgentChatRequest",
     "AgentChatResponse",
     "AgentIntent",
