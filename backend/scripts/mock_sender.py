@@ -1,10 +1,10 @@
 """课堂模拟事件发送器。
 
-这个脚本用于在真实 ASR、OCR/VLM、SLM 模块尚未接入时，假装这些模块
-已经在持续产生数据。它会按顺序调用后端 HTTP API：
+这个脚本用于在真实 ASR、OCR/VLM 以及 EDU-Mate 内部知识抽取模块尚未
+完全接入时，假装课堂数据流已经在持续产生。它会按顺序调用后端 HTTP API：
 
 1. 使用前端页面已经创建好的课堂 session。
-2. 按时间间隔发送模拟字幕、图片和知识抽取事件。
+2. 按时间间隔发送模拟字幕、图片和内部知识抽取结果。
 3. 默认自动结束课堂，触发本地保存。
 
 运行前请先启动后端：
@@ -35,8 +35,8 @@ DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 class MockEvent:
     """一条待发送的模拟事件。
 
-    event_type 对应后端 RealtimeEvent.event_type，payload 则模拟算法组
-    或硬件采集模块产生的数据。
+    event_type 对应后端 RealtimeEvent.event_type，payload 模拟外部采集
+    模块或 EDU-Mate 内部知识抽取模块产生的数据。
     """
 
     event_type: str

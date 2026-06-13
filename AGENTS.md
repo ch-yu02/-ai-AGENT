@@ -1,35 +1,61 @@
 # EDU-Mate / Lecture-Link Development Guide
 
-This file records the current full-stack conventions so future agents and
-developers can continue the project without rediscovering the structure.
+This is the single source of truth for the current project state, development
+rules, capability boundaries, and near-term roadmap. Keep `Tasks.md` and
+`docs/AGENT_DEVELOPMENT_PLAN.md` aligned with this file instead of duplicating
+conflicting plans.
 
-## Current Scope
+## Current State
 
-The backend MVP implements this classroom data flow:
+EDU-Mate is now a full-stack local classroom Agent system. It is no longer only
+a backend MVP or only a realtime dashboard.
 
-1. Start a classroom session.
-2. Receive realtime events.
-3. Update classroom context and knowledge graph in memory.
-4. Push updates to WebSocket subscribers.
-5. End the classroom and save local files.
+Completed core capabilities:
 
-The frontend MVP is also implemented. It provides a realtime classroom
-dashboard that can:
+- Realtime classroom lifecycle: start session, receive events, update context,
+  push WebSocket updates, end session, and save local artifacts.
+- Frontend realtime dashboard: start/end classroom, WebSocket status,
+  transcript panel, timeline panel, visual/OCR panel, knowledge graph panel,
+  history panel, Agent panel, global search panel, and post-class artifacts.
+- Local history: ended sessions are saved under `data/sessions/{session_id}/`;
+  frontend can list, open, deep-link to, and delete saved sessions.
+- Post-class artifacts: summary and todos are generated on session end;
+  quiz is generated on demand.
+- Classroom Agent: `POST /agent/chat` supports `qa`, `summary`, `todos`, and
+  `quiz` modes with strict/grounded QA.
+- Cross-classroom search: `POST /agent/search` searches saved sessions with
+  optional course/date filters.
+- Optional LLM integration: cloud/local OpenAI-compatible provider support via
+  environment variables.
+- Optional RAG: lexical search by default, optional LlamaIndex backends for
+  single-session and global indexes.
+- Mock sender: sends ASR, visual, and mock internal knowledge extraction events
+  to a session created manually from the frontend.
 
-1. Start and end a classroom session through the backend API.
-2. Connect to `/ws/{session_id}` and consume `WebSocketMessage` updates.
-3. Show realtime transcript segments.
-4. Show unified timeline items.
-5. Show image/OCR/VLM updates.
-6. Apply `graph_patch.operations` to a knowledge graph view.
+## Capability Boundaries
 
-The project is now past the "minimum realtime demo" stage. The active
-development area should shift toward history reading, post-class skills,
-LLM integration, and end-to-end demo hardening.
+External integrations should normally send only:
+
+```text
+transcript.segment
+image.capture
+```
+
+Knowledge extraction is an EDU-Mate responsibility:
+
+- `knowledge.extraction` is an internal pipeline event.
+- It may be produced by the future internal knowledge extractor.
+- It may be sent by `mock_sender.py` for demo/debug.
+- External ASR/OCR/hardware integrations should not be required to send it.
+
+Current limitation:
+
+- The graph pipeline can consume `knowledge.extraction`, but automatic internal
+  extraction from ASR/OCR is still a planned implementation item.
 
 ## Commands
 
-Preferred local helper:
+Preferred helper:
 
 ```bash
 scripts/dev.sh help
@@ -41,466 +67,339 @@ Start backend and frontend together:
 scripts/dev.sh dev
 ```
 
-Run all backend and frontend tests:
+Run all tests:
 
 ```bash
 scripts/dev.sh test
 ```
 
-Build/check the frontend:
-
-```bash
-scripts/dev.sh build
-```
-
-Compile-check backend files:
+Compile-check backend:
 
 ```bash
 scripts/dev.sh compile
 ```
 
-Run mock sender against a session created by the frontend UI. The classroom
-must be started manually from the frontend first:
+Build/check frontend:
+
+```bash
+scripts/dev.sh build
+```
+
+Run mock sender against a frontend-created session:
 
 ```bash
 scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 ```
 
-Use `BACKEND_HOST`, `BACKEND_PORT`, `FRONTEND_HOST`, and `FRONTEND_PORT` to
-override development server addresses. For LAN testing:
+Manually smoke-test configured LLM provider:
+
+```bash
+scripts/dev.sh llm-smoke
+```
+
+LAN testing:
 
 ```bash
 BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
 ```
 
-Underlying backend command:
+Underlying commands:
 
 ```bash
 .venv/bin/uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Underlying backend tests:
-
-```bash
 .venv/bin/python -m unittest discover -s backend/tests
-```
-
-Underlying backend compile-check:
-
-```bash
-.venv/bin/python -m py_compile backend/app/main.py backend/app/api/*.py backend/app/core/*.py backend/app/models/*.py backend/app/storage/*.py backend/tests/*.py
-```
-
-Install/update backend dependencies:
-
-```bash
-.venv/bin/pip install -r backend/requirements.txt
-```
-
-Underlying frontend command:
-
-```bash
-cd frontend
-npm run dev
-```
-
-Underlying frontend build:
-
-```bash
-cd frontend
-npm run build
-```
-
-Underlying frontend tests:
-
-```bash
-cd frontend
-npm test
+cd frontend && npm run dev
+cd frontend && npm test
+cd frontend && npm run build
 ```
 
 Note: `fastapi.testclient.TestClient` has been unstable in this environment, so
-tests prefer manager-level and service-level coverage instead of route-level
-TestClient tests.
+tests prefer manager-level, service-level, and storage-level coverage.
 
-## Backend Layers
+## Backend Structure
 
-Keep the existing separation:
+```text
+backend/app/main.py
+backend/app/api/
+backend/app/core/
+backend/app/models/
+backend/app/storage/
+backend/app/agent/
+backend/app/skills/
+backend/app/rag/
+backend/app/llm/
+backend/scripts/
+backend/tests/
+```
 
-- `backend/app/main.py`: FastAPI app creation, CORS, health routes, router registration.
-- `backend/app/api/`: thin HTTP/WebSocket route handlers.
-- `backend/app/core/`: business/runtime managers.
-- `backend/app/models/`: shared Pydantic data contracts.
-- `backend/app/storage/`: local persistence.
-- `backend/tests/`: standard-library `unittest` tests.
+Layer rules:
 
-API modules should translate manager exceptions to HTTP status codes. Core
-managers should not import FastAPI or raise `HTTPException`.
+- `api/`: thin HTTP/WebSocket routes only. Convert domain exceptions to HTTP.
+- `core/`: runtime managers for sessions, context, graph, and WebSockets.
+- `models/`: shared Pydantic contracts for events, context, graph, sessions.
+- `storage/`: local persistence and history deletion/reading.
+- `agent/`: prompt routing, classroom Agent orchestration, global search.
+- `skills/`: QA, summarizer, todo detective, quiz master.
+- `rag/`: document conversion, lexical/LlamaIndex query services, global index.
+- `llm/`: provider settings and cloud/local model client.
 
-## Core Managers
+Core manager notes:
 
-`SessionManager`
+- `SessionManager` owns lifecycle and keeps recording/ended sessions in memory.
+- `ContextManager` converts realtime events into transcript, visuals,
+  knowledge extractions, timeline, and compressed context.
+- `KnowledgeGraphManager` consumes internal `knowledge.extraction`, deduplicates
+  nodes by normalized entity name, creates placeholder nodes for missing
+  relation endpoints, and emits `GraphPatch`.
+- `WebSocketManager` tracks subscribers by `session_id` and removes failed
+  sockets during broadcast.
 
-- Owns classroom lifecycle: create, get, end, require recording.
-- Keeps both recording and ended sessions in memory.
-- Ending a session is idempotent.
-- Raises `SessionNotFoundError` or `SessionConflictError`.
+## Frontend Structure
 
-`ContextManager`
+```text
+frontend/src/App.tsx
+frontend/src/components/
+frontend/src/services/
+frontend/src/stores/
+frontend/src/types/
+frontend/src/utils/
+frontend/src/styles.css
+```
 
-- Converts `RealtimeEvent` into `ClassroomContext`.
-- Handles:
-  - `transcript.segment` -> transcript + timeline
-  - `image.capture` -> visuals + timeline
-  - `knowledge.extraction` -> knowledge_extractions + timeline
-- Provides `get_compressed_context()` for future post-class skills.
+Frontend rules:
 
-`KnowledgeGraphManager`
+- Keep HTTP calls in `frontend/src/services/`.
+- Keep WebSocket parsing in `services/websocket.ts`.
+- Keep realtime merge logic in `frontend/src/stores/classroomStore.ts`.
+- Components should render state and trigger service actions, not own protocol
+  parsing.
+- TypeScript contracts should mirror `docs/API_SCHEMA.md`.
 
-- Consumes `knowledge.extraction`.
-- Maintains one `KnowledgeTree` per session.
-- Produces `GraphPatch` for frontend incremental updates.
-- Deduplicates nodes by normalized entity name.
-- Adds placeholder nodes when relations reference missing entities.
+Important components:
 
-`WebSocketManager`
+- `ClassroomControls`
+- `StatusStrip`
+- `RealtimeTranscriptPanel`
+- `TimelinePanel`
+- `VisualOcrPanel`
+- `KnowledgeGraphPanel`
+- `HistoryPanel`
+- `AgentPanel`
+- `GlobalSearchPanel`
+- `PostClassArtifactsPanel`
 
-- Tracks WebSocket connections by `session_id`.
-- Broadcasts `WebSocketMessage` to all subscribers for a session.
-- Removes failed sockets during broadcast.
-- Tests use fake WebSocket objects; do not require a real network server.
+## Runtime Data
 
-## Storage
-
-`LocalStorage.save_session()` writes MVP artifacts to:
+Ended sessions are stored under:
 
 ```text
 data/sessions/{session_id}/metadata.json
 data/sessions/{session_id}/transcript.md
 data/sessions/{session_id}/timeline.json
 data/sessions/{session_id}/knowledge_graph.json
+data/sessions/{session_id}/summary.md
+data/sessions/{session_id}/todos.json
+data/sessions/{session_id}/quiz.json
+data/sessions/{session_id}/agent_messages.json
+data/sessions/{session_id}/agent_artifacts.json
+data/sessions/{session_id}/llama_index/
 ```
 
-`data/sessions/*` is ignored by git except `.gitkeep`.
-
-The session end route should:
-
-1. Load context and graph.
-2. Mark the session ended.
-3. Save files with `LocalStorage`.
-4. Broadcast `session.ended` with storage paths.
-
-Do not write event data directly from API routes. Keep persistence in
-`backend/app/storage/`.
-
-History deletion should follow the same storage boundary:
-
-1. Frontend calls `DELETE /sessions/{session_id}/history`.
-2. API routes delegate to `LocalStorage.delete_session()`.
-3. Storage removes only `data/sessions/{session_id}` after validating the target
-   stays inside the configured storage root.
-4. Deleting history does not remove or mutate in-memory `SessionManager` state.
-5. Frontend must remove the deleted item from the history list. If that history
-   item is currently loaded in the dashboard, clear the dashboard state.
-
-## Event Contract
-
-Realtime input uses `RealtimeEvent`:
-
-```json
-{
-  "session_id": "lec_xxx",
-  "event_type": "transcript.segment",
-  "payload": {}
-}
-```
-
-Supported event types:
-
-- `transcript.segment`
-- `image.capture`
-- `knowledge.extraction`
-
-The event payload remains flexible for MVP integration. Parse payloads into
-stronger models inside managers, not in route functions.
-
-## API Routes
-
-Current routes:
+Global search/index artifacts:
 
 ```text
-GET  /
-GET  /health
-POST /sessions/start
-GET  /sessions/{session_id}
-GET  /sessions
-GET  /sessions/{session_id}/history
+data/indexes/global/documents.json
+data/indexes/global/manifest.json
+data/indexes/global/llama_index/
+```
+
+`data/sessions/*` is ignored by git except `.gitkeep`. Do not destructively
+clean this directory unless explicitly requested.
+
+## Input Contract
+
+The integration contract lives in:
+
+```text
+docs/INPUT_DATA_CONTRACT.md
+```
+
+External modules:
+
+- ASR sends `transcript.segment`.
+- OCR/VLM/camera sends `image.capture`.
+- Hardware should coordinate IP, image path, microphone/camera ownership, and
+  offline caching.
+
+Internal EDU-Mate module:
+
+- Future knowledge extractor reads `ClassroomContext.transcript` and
+  `ClassroomContext.visuals`.
+- It generates internal `knowledge.extraction`.
+- `KnowledgeGraphManager` applies the generated extraction to the graph.
+
+## API Summary
+
+System and sessions:
+
+```text
+GET    /
+GET    /health
+POST   /sessions/start
+GET    /sessions/{session_id}
+GET    /sessions
+GET    /sessions/{session_id}/history
 DELETE /sessions/{session_id}/history
-POST /sessions/{session_id}/end
+POST   /sessions/{session_id}/end
+```
+
+Realtime:
+
+```text
 POST /events
 WS   /ws/{session_id}
 ```
 
-`POST /events` pipeline:
+Agent:
 
-1. `session_manager.require_recording()`
-2. `context_manager.handle_event()`
-3. derive `event_count` from context counters
-4. `knowledge_graph_manager.handle_event()`
-5. `websocket_manager.broadcast()`
-6. return `EventAcceptedResponse`
+```text
+POST /agent/chat
+POST /agent/search
+```
 
-## Frontend Layers
-
-The frontend lives in `frontend/` and uses React, Vite, TypeScript, and Vitest.
-
-Keep the existing separation:
-
-- `frontend/src/App.tsx`: page orchestration, HTTP actions, WebSocket lifecycle.
-- `frontend/src/components/`: presentation components for controls and panels.
-- `frontend/src/services/`: API and WebSocket clients. Components should not
-  call `fetch` directly.
-- `frontend/src/stores/`: reducer/store logic for merging realtime messages
-  into dashboard state.
-- `frontend/src/types/`: TypeScript mirrors of backend contracts from
-  `docs/API_SCHEMA.md`.
-- `frontend/src/utils/`: formatting helpers such as classroom-relative time.
-- `frontend/src/styles.css`: global MVP layout and panel styling.
-
-Frontend service defaults:
-
-- `VITE_API_BASE_URL` overrides `http://127.0.0.1:8000`.
-- `VITE_WS_BASE_URL` overrides `ws://127.0.0.1:8000/ws`.
-
-`App.tsx` should remain focused on:
-
-1. starting/ending sessions,
-2. opening/closing the active WebSocket,
-3. dispatching messages to `classroomReducer`,
-4. rendering the dashboard panels.
-
-Do not move WebSocket message merge logic into UI panels. Keep
-`event.received`, `session.ended`, and `graph_patch` handling in
-`frontend/src/stores/classroomStore.ts`.
-
-## Frontend MVP Behavior
-
-Implemented panels:
-
-- `ClassroomControls`: start/end session buttons.
-- `StatusStrip`: session status, WebSocket status, event count.
-- `RealtimeTranscriptPanel`: transcript updates from `transcript.segment`.
-- `TimelinePanel`: `context_update.timeline_item` display.
-- `VisualOcrPanel`: `image.capture` OCR/caption display.
-- `KnowledgeGraphPanel`: deterministic node and relation view from graph patches.
-- `HistoryPanel`: saved session list, history detail opening, and history
-  deletion controls.
-
-Frontend WebSocket rules:
+## WebSocket Rules
 
 - Do not rely on receiving `session.started`; the frontend usually connects
   after session creation.
 - Treat browser `onopen` and backend `ws.connected` as idempotent connected
   signals.
-- Treat `event.received.data.context_update.timeline_item` as the canonical
+- `event.received.data.context_update.timeline_item` is the canonical
   incremental timeline item.
-- Treat `event.received.data.graph_patch` as optional. It is normally present
-  only for `knowledge.extraction`.
+- `event.received.data.graph_patch` is optional and normally appears only when
+  internal `knowledge.extraction` updates the graph.
 - Apply graph patch operations in order.
-- Treat `session.ended` as a final realtime state update, but keep transcript,
-  timeline, visuals, and graph visible after ending the classroom.
-- Every `event.received` must update the frontend in realtime:
-  - all supported events append/update the unified timeline,
-  - `transcript.segment` updates the transcript panel,
-  - `image.capture` updates the visual/OCR panel,
-  - `knowledge.extraction` applies `graph_patch.operations` when present.
-- Deleting a history item is destructive for local files. Keep confirmation in
-  the frontend and keep backend deletion routed through `LocalStorage`.
+- Keep transcript, timeline, visuals, graph, and Agent artifacts visible after
+  session end.
 
-## Testing Conventions
+## Agent And RAG
 
-Use `unittest`, not pytest, unless the project explicitly adopts pytest later.
+Single-classroom Agent:
 
-Existing tests:
+- `POST /agent/chat`
+- modes: `auto`, `qa`, `summary`, `todos`, `quiz`
+- QA answer modes: `strict`, `grounded`
+- strict mode should answer only from classroom data.
+- grounded mode may use model background knowledge, but must return warnings.
 
-- `test_session_manager.py`
-- `test_context_manager.py`
-- `test_knowledge_graph_manager.py`
-- `test_websocket_manager.py`
-- `test_local_storage.py`
-- `test_storage_integration.py`
+Cross-classroom search:
 
-When adding a module, add a focused test file under `backend/tests/`.
+- `POST /agent/search`
+- Searches saved sessions only.
+- Supports filters such as course and date range.
+- Can open frontend history detail and focus source refs.
 
-Prefer temporary directories for storage tests:
+LLM:
 
-```python
-tempfile.TemporaryDirectory()
-LocalStorage(Path(temp_dir) / "sessions")
-```
+- Provider config comes from environment variables.
+- API keys must stay backend-only.
+- `.env` and `.env.*` are ignored by git.
+- Tests must not depend on network, real API keys, or heavy local models.
 
-Do not write tests that depend on persistent files in `data/sessions/`.
+RAG:
 
-Frontend tests use Vitest.
+- Lexical fallback should remain available.
+- Optional LlamaIndex backends should fail gracefully and return warnings.
+- Saved indexes should be treated as cache artifacts, not source of truth.
 
-Existing frontend tests:
+## Testing
 
-- `frontend/src/stores/classroomStore.test.ts`
+Backend uses standard-library `unittest`.
 
-Prefer reducer/service-level tests for realtime message handling. UI tests can
-be added later when the project adopts a browser test setup. Do not make tests
-depend on a live backend server unless explicitly writing an integration smoke
-test.
+Current backend test areas include:
 
-## Manual Smoke Test
+- session manager
+- context manager
+- knowledge graph manager
+- websocket manager
+- local storage and storage integration
+- Agent intent router and classroom Agent
+- skills
+- RAG documents/query services/LlamaIndex fallback
+- LLM client
+- global search
+- post-class artifact generation
 
-Start backend:
+Frontend uses Vitest, currently focused on store/reducer behavior.
 
-```bash
-.venv/bin/uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
+Testing rules:
 
-Start a session:
+- Prefer temporary directories for storage tests.
+- Do not depend on persistent files in `data/sessions/`.
+- Do not call real LLM providers in automated tests.
+- Use fake clients/services for provider-specific behavior.
+- Keep route tests light because `TestClient` is unreliable here.
 
-```bash
-curl -X POST http://127.0.0.1:8000/sessions/start \
-  -H "Content-Type: application/json" \
-  -d '{"title":"通信原理第8讲","course":"通信原理"}'
-```
+## Manual Smoke Flow
 
-Send a transcript event:
-
-```bash
-curl -X POST http://127.0.0.1:8000/events \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id":"REPLACE_WITH_SESSION_ID",
-    "event_type":"transcript.segment",
-    "payload":{
-      "segment_id":"seg_001",
-      "start_ts":1.0,
-      "end_ts":3.5,
-      "text":"傅里叶变换可以把时域信号转换到频域。"
-    }
-  }'
-```
-
-Send a knowledge event:
+1. Start backend/frontend:
 
 ```bash
-curl -X POST http://127.0.0.1:8000/events \
-  -H "Content-Type: application/json" \
-  -d '{
-    "session_id":"REPLACE_WITH_SESSION_ID",
-    "event_type":"knowledge.extraction",
-    "payload":{
-      "extraction_id":"ext_001",
-      "timestamp_range":[1.0,3.5],
-      "source_segment_ids":["seg_001"],
-      "entities":[
-        {"entity_id":"node_fourier","name":"傅里叶变换"},
-        {"entity_id":"node_freq","name":"频域"}
-      ],
-      "relations":[
-        {"source":"傅里叶变换","target":"频域","relation":"maps_to"}
-      ]
-    }
-  }'
+scripts/dev.sh dev
 ```
 
-End the session:
-
-```bash
-curl -X POST http://127.0.0.1:8000/sessions/REPLACE_WITH_SESSION_ID/end
-```
-
-Check saved files:
-
-```bash
-ls data/sessions/REPLACE_WITH_SESSION_ID
-```
-
-## Full-Stack Manual Smoke Test
-
-Start backend:
-
-```bash
-.venv/bin/uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-Start frontend:
-
-```bash
-cd frontend
-npm run dev
-```
-
-Open:
+2. Open:
 
 ```text
 http://127.0.0.1:5173
 ```
 
-Click "Start Classroom" in the UI, then run mock sender in another terminal.
-Copy the UI-generated `session_id`, then send mock events into that exact
-frontend session:
+3. Click Start Classroom.
+4. Copy `session_id`.
+5. Send mock events:
 
 ```bash
 scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 ```
 
-Use `--no-end` during frontend debugging so the page stays in the recording
-state after mock events arrive. Omit `--no-end` when you want to exercise the
-full end-and-save path.
+6. Verify:
 
-Expected frontend behavior:
+- WebSocket status connected.
+- Transcript grows.
+- Timeline grows.
+- Visual/OCR panel updates.
+- Mock internal knowledge extraction updates graph.
+- Agent panel can answer/summarize/extract todos/generate quiz.
+- Ending session saves history and artifacts.
 
-1. WebSocket status reaches connected.
-2. Transcript panel grows for `transcript.segment`.
-3. Timeline panel grows for all event types.
-4. Visual/OCR panel updates for `image.capture`.
-5. Knowledge graph panel updates for `knowledge.extraction`.
-6. Ending a classroom leaves the captured data visible.
+## Active Roadmap
 
-## WebSocket Manual Test
+Highest priority:
 
-Do not test from a page with strict CSP such as `connect-src https:`. Use
-`about:blank` or a local HTML file.
+1. Implement the internal knowledge extraction module.
+2. Stop depending on mock `knowledge.extraction` for real graph growth.
+3. Add tests for extraction from transcript/OCR to internal extraction payload.
+4. Wire extraction into the event flow without blocking realtime `POST /events`.
 
-Browser console:
+Next:
 
-```js
-const sid = "REPLACE_WITH_SESSION_ID";
-const ws = new WebSocket(`ws://127.0.0.1:8000/ws/${sid}`);
-ws.onopen = () => console.log("connected");
-ws.onmessage = (event) => console.log("WS:", JSON.parse(event.data));
-ws.onerror = (event) => console.log("error", event);
-ws.onclose = (event) => console.log("closed", event.code, event.reason);
-```
+1. Document real LlamaIndex/embedding provider setup.
+2. Add a global index rebuild command to avoid first-search rebuild cost.
+3. Add frontend tests for URL deep-link and focused source behavior.
+4. Add Ollama/vLLM local model setup examples.
+5. Improve visual image serving/upload if frontend must display real images.
 
-Sessions are in memory. If the backend restarts, old session IDs no longer
-exist even if saved files remain on disk.
+Later:
 
-## Style Notes
+1. Recording-time batch incremental indexing.
+2. Export full classroom Markdown package.
+3. Export graph Mermaid, todos ICS, and quiz/Anki formats.
+4. API key/config UI.
+5. Deployment docs and startup service for Ubuntu/DK device.
 
-- Keep comments useful and explain responsibilities, data flow, and extension points.
-- Avoid moving business logic into route modules.
-- Keep route response models in `backend/app/models/`.
-- Keep frontend HTTP and WebSocket logic in `frontend/src/services/`.
-- Keep frontend realtime merge logic in `frontend/src/stores/`.
-- Keep backward-compatible shims only when they prevent existing imports from breaking
-  (`api/schemas.py`, `api/realtime.py` currently do this).
-- Use UTF-8 for Chinese content in JSON and Markdown.
-- Avoid destructive cleanup of `data/sessions/` unless explicitly requested.
+## Documentation Map
 
-## Near-Term Extension Points
-
-Likely next modules:
-
-- History API: list/read saved sessions from `LocalStorage`.
-- Post-class skills: summarizer, todos, quiz.
-- Cloud LLM client: DeepSeek first, with retries and structured output checks.
-- Frontend history view: list saved sessions and replay transcript/timeline/graph.
-- Frontend post-class view: summary, todos, quiz.
-- Mock sender extensions: add alternate scenarios, longer replay files, or
-  JSON fixture loading for demo rehearsals.
-- Storage hardening: periodic snapshots while recording.
+- `AGENTS.md`: this source of truth.
+- `Tasks.md`: active checklist derived from this guide.
+- `docs/API_SCHEMA.md`: HTTP/WebSocket/Agent API schema.
+- `docs/INPUT_DATA_CONTRACT.md`: ASR/OCR/hardware input contract.
+- `docs/AGENT_DEVELOPMENT_PLAN.md`: Agent/RAG focused roadmap derived from this guide.

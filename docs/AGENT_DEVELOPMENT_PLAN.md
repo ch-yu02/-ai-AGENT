@@ -1,253 +1,212 @@
-# EDU-Mate Agent Development Plan
+# EDU-Mate Agent / RAG Development Plan
 
-本文档记录 EDU-Mate / Lecture-Link 课堂 Agent 的当前状态和后续开发重点。
-项目已经从“实时课堂看板”进入“可演示课堂 Agent”阶段。
+`AGENTS.md` 是项目唯一主开发指南。本文件只记录 Agent、RAG、LLM、技能和
+内部知识抽取相关的后续计划，避免和全局架构文档重复。
 
-## 当前状态
+## 1. 当前 Agent 能力
 
-已完成能力：
+已完成：
 
-- 实时课堂：创建/结束课堂、接收事件、WebSocket 推送字幕、图片/OCR、时间线和知识图谱。
-- 历史课堂：结束后保存本地文件，前端可打开历史详情并删除本地历史。
-- 单节课堂 Agent：`POST /agent/chat` 支持 `qa` / `summary` / `todos` / `quiz`；QA 支持 strict 与 grounded 两种答疑模式。
-- 课后产物：
-  - 结束课堂自动生成 `summary.md` 和 `todos.json`。
-  - `quiz.json` 只在用户主动生成自测题后保存。
-  - Agent 对话保存到 `agent_messages.json`，打开历史课堂时恢复。
-- 可选 LLM：云端 provider 配置 `LLM_API_KEY` 后启用；`LLM_PROVIDER=local` 可连接本地 OpenAI-compatible 服务。
-- 可选单节课 LlamaIndex：`RAG_QUERY_BACKEND=llamaindex` 时启用，结束课堂后尝试保存 `llama_index/`，查询失败时回退词法检索。
-- 跨课堂搜索第一版：`POST /agent/search` 可搜索已保存历史课堂，支持课程和日期过滤，前端可打开命中课堂并定位来源。
-- 可选全局 LlamaIndex：`GLOBAL_SEARCH_BACKEND=llamaindex` 时启用，使用 `data/indexes/global/llama_index/` 作为全局向量索引目录，失败时回退词法搜索。
-- URL 深链接：历史课堂支持 `session_id/source_type/source_id` query，刷新或复制链接后可恢复定位。
-- Provider smoke：`scripts/dev.sh llm-smoke` 可手动验证真实 LLM provider。
+- `POST /agent/chat`
+  - `mode=auto`
+  - `mode=qa`
+  - `mode=summary`
+  - `mode=todos`
+  - `mode=quiz`
+- QA 支持：
+  - `answer_mode=strict`
+  - `answer_mode=grounded`
+- `POST /agent/search` 跨历史课堂搜索。
+- 课后自动生成：
+  - `summary.md`
+  - `todos.json`
+- 用户主动生成：
+  - `quiz.json`
+- 持久化：
+  - `agent_messages.json`
+  - `agent_artifacts.json`
+- RAG：
+  - 默认词法检索
+  - 可选单节课 LlamaIndex
+  - 可选全局 LlamaIndex
+- LLM：
+  - 云端 OpenAI-compatible provider
+  - 本地 OpenAI-compatible provider
+  - `scripts/dev.sh llm-smoke`
 
-主要运行时产物：
+重要边界：
 
-```text
-data/sessions/{session_id}/metadata.json
-data/sessions/{session_id}/transcript.md
-data/sessions/{session_id}/timeline.json
-data/sessions/{session_id}/knowledge_graph.json
-data/sessions/{session_id}/summary.md
-data/sessions/{session_id}/todos.json
-data/sessions/{session_id}/quiz.json
-data/sessions/{session_id}/agent_messages.json
-data/sessions/{session_id}/agent_artifacts.json
-data/sessions/{session_id}/llama_index/
-data/indexes/global/documents.json
-data/indexes/global/manifest.json
-data/indexes/global/llama_index/
-```
+- 外部 ASR/OCR 模块不负责知识抽取。
+- `knowledge.extraction` 是 EDU-Mate 内部事件。
+- 真实内部知识抽取模块仍是下一阶段重点。
 
-## 当前接口
+## 2. 当前数据流
 
-### `POST /agent/chat`
-
-单节课堂 Agent 入口，用于对录制中课堂或历史课堂问答、总结、提取待办、生成自测题。
-
-请求：
-
-```json
-{
-  "session_id": "lec_xxx",
-  "prompt": "帮我总结这节课的重点",
-  "mode": "auto",
-  "answer_mode": "strict"
-}
-```
-
-`mode` 可选：`auto` / `qa` / `summary` / `todos` / `quiz`。
-`answer_mode` 只对 QA 生效：
-
-- `strict`：默认模式，只依据课堂资料回答。
-- `grounded`：先依据课堂资料，再允许 LLM 使用通用知识补充解释；返回 warning 标明包含模型补充。
-
-响应核心字段：
-
-- `intent`：识别出的意图。
-- `answer`：主回答。
-- `artifacts`：结构化产物。
-- `source_refs`：来源引用。
-- `warnings`：数据不足、LLM 失败、检索回退等提示。
-
-### `POST /agent/search`
-
-跨课堂搜索入口，用于在已保存历史课堂中搜索知识点、作业、概念或其他课堂资料。
-
-请求：
-
-```json
-{
-  "query": "哪节课讲过采样定理",
-  "course": "通信原理",
-  "date_from": "2026-06-01",
-  "date_to": "2026-06-09",
-  "limit": 8
-}
-```
-
-响应核心字段：
-
-- `answer`：搜索结果摘要。
-- `hits`：命中列表，每项包含 `session_id`、课堂标题、课程、分数和 `source_ref`。
-- `warnings`：坏历史目录跳过、索引回退等提示。
-
-## 后端结构
-
-核心模块：
+当前真实外部输入：
 
 ```text
-backend/app/agent/
-  classroom_agent.py
-  global_search.py
-  intent_router.py
+ASR -> transcript.segment
+OCR/VLM -> image.capture
+```
+
+当前图谱输入：
+
+```text
+mock sender/debug -> knowledge.extraction
+KnowledgeGraphManager -> GraphPatch
+```
+
+目标图谱输入：
+
+```text
+transcript.segment + image.capture
+→ EDU-Mate internal KnowledgeExtractor
+→ internal knowledge.extraction
+→ KnowledgeGraphManager
+→ GraphPatch
+```
+
+## 3. 下一阶段：内部知识抽取
+
+目标：只靠 ASR/OCR 输入也能让知识图谱增长。
+
+建议新增：
+
+```text
+backend/app/extraction/
+  __init__.py
+  knowledge_extractor.py
   schemas.py
-  source_refs.py
-
-backend/app/rag/
-  documents.py
-  global_index_service.py
-  query_service.py
-  llama_query_service.py
-  service_factory.py
-
-backend/app/skills/
-  qa.py
-  summarizer.py
-  todo_detective.py
-  quiz_master.py
-  llm_support.py
-
-backend/app/llm/
-  cloud_client.py
-  settings.py
 ```
 
-职责边界：
+第一版使用规则抽取，不依赖 LLM：
 
-- API 路由只做参数接收、错误转换和 manager/agent 调用。
-- 课堂数据读写继续放在 `LocalStorage`。
-- Agent 负责意图识别和技能编排。
-- RAG 层负责把课堂历史转换为可检索文档。
-- Skill 层负责生成 summary/todos/quiz/qa 结果。
+- 从最近 N 条 transcript 中抽取候选术语。
+- 从 OCR/caption 中抽取公式和概念。
+- 用简单规则生成 relation：
+  - `belongs_to`
+  - `mentions`
+  - `defines`
+  - `related_to`
+- 保留 source refs。
 
-## 前端结构
+第二版接 LLM：
 
-核心入口：
+- 使用 `CloudLLMClient`。
+- 输出结构必须校验为 `KnowledgeExtraction`。
+- 失败时回退规则抽取或返回 warning。
+
+触发策略建议：
 
 ```text
-frontend/src/components/AgentPanel.tsx
-frontend/src/components/GlobalSearchPanel.tsx
-frontend/src/services/agentApi.ts
-frontend/src/types/agent.ts
+短期：session end 时批量抽取
+中期：每 N 条 transcript 批量抽取
+长期：后台队列异步抽取
 ```
 
-已完成表现：
+不要在 `POST /events` 中做长时间阻塞。
 
-- 历史课堂详情中可直接查看 summary/todos/quiz。
-- 用户主动点击或输入后才生成 quiz。
-- Agent 对话在历史课堂重新打开后可以恢复。
-- 全局搜索结果可以打开对应历史课堂，并尽量高亮字幕、图片/OCR 或时间线来源。
-- URL query 可恢复历史课堂和来源定位，例如
-  `?session_id=lec_xxx&source_type=segment&source_id=seg_001`。
-- 知识图谱节点/边也支持搜索来源高亮。
+## 4. RAG 后续计划
 
-## 剩余能力
+已完成：
 
-### 已完成：真实全局向量索引入口
+- 单节课文档转换。
+- 词法查询服务。
+- 可选 LlamaIndex 查询服务。
+- 全局搜索与全局索引目录。
 
-当前已经有可选全局 LlamaIndex 主链路：
+下一步：
 
-- 默认 `GLOBAL_SEARCH_BACKEND=lexical`，继续使用确定性词法搜索。
-- 设置 `GLOBAL_SEARCH_BACKEND=llamaindex` 后，`POST /agent/search` 会优先构建或加载 `data/indexes/global/llama_index/`。
-- `manifest.json` 记录文档快照指纹，历史课堂变化后自动重建索引。
-- 索引不可用、依赖未安装或 provider 失败时，自动回退词法搜索并返回 warning。
-
-仍可增强：
-
-1. 增加真实 embedding provider 的安装说明。
-2. 为全局索引增加独立 rebuild 命令，避免首次搜索承担全部构建成本。
-3. 增加更多语义搜索评测 fixture。
-
-### 暂缓：录制中增量索引
-
-当前单节课索引主要在结束课堂后持久化；录制中 QA 仍依赖内存文档和当前查询服务。
-
-未完成原因：
-
-- 每条字幕都重建索引会浪费性能。
-- ASR/OCR/VLM 结果可能延迟或修正，需要去重和更新策略。
-- 实时事件请求不应被重索引阻塞。
-
-建议实现：
-
-1. 为 session 增加 dirty 标记。
-2. 每 N 条字幕或 N 秒批量刷新临时索引。
-3. 结束课堂时构建最终完整索引。
-4. 后续可把刷新放入后台任务队列。
-
-本阶段按需求暂不开发。
-
-### 已完成：真实 Provider Smoke Test
-
-当前已增加：
-
-- `backend/scripts/llm_smoke.py`
-- `scripts/dev.sh llm-smoke`
-
-行为：
-
-- 云端 provider 无 `LLM_API_KEY` 时跳过。
-- 有真实 provider 或 `LLM_PROVIDER=local` 时，用固定课堂 fixture 测 summary/todos/quiz。
-- 任一技能回退或产生 warning 时，脚本返回失败，便于手动联调定位。
-
-### 已完成：URL 深链接
-
-当前已支持：
-
-- 打开历史课堂时写入 `?session_id=...`。
-- 从搜索命中打开时写入 `source_type`、`source_id` 和可选 `ts`。
-- 页面首次加载会读取 URL，自动打开历史课堂并定位来源。
-- 字幕、图片/OCR、时间线、知识图谱节点/边都可以接收 focused source。
-
-示例：
-
-```text
-/?session_id=lec_xxx&source_type=segment&source_id=seg_001
-```
-
-### 已完成：本地模型模式入口
-
-当前已支持：
-
-- `LLM_PROVIDER=local`
-- `LLM_BASE_URL=http://127.0.0.1:11434/v1`
-- `LLM_MODEL=llama3.1`
-- 本地 provider 允许 `LLM_API_KEY` 为空。
-- HTTP 请求无 key 时不会发送空 Authorization header。
-
-示例：
-
-```text
-LLM_PROVIDER=local
-LLM_BASE_URL=http://127.0.0.1:11434/v1
-LLM_MODEL=...
-```
-
-仍可增强：
-
-1. 补充 Ollama/vLLM 具体启动示例。
-2. 增加本地 embedding provider 文档。
-3. 为本地模型输出稳定性建立手动评测样例。
-
-## 下一步顺序
-
-建议按验证收益优先：
-
-1. 补充真实 LlamaIndex/embedding provider 安装文档。
+1. 补充真实 provider 安装文档。
 2. 增加全局索引 rebuild 命令。
-3. 增加 URL 深链接的前端测试覆盖。
-4. 增加 Ollama/vLLM 本地模型 smoke 文档。
-5. 录制中批量增量索引继续暂缓。
+3. 增加 embedding provider 配置说明。
+4. 增加 LlamaIndex 依赖缺失时的用户可读提示。
+5. 为语义搜索增加固定评测 fixture。
 
-默认测试仍应保持不依赖网络、不依赖真实 API key、不依赖重量级本地模型。
+暂缓：
+
+- 录制中每条事件增量索引。
+- 原因：性能、去重、ASR/OCR 延迟修正策略尚未稳定。
+
+## 5. Skill 后续计划
+
+已完成：
+
+- QA
+- Summarizer
+- TodoDetective
+- QuizMaster
+- LLM 支持层
+
+下一步：
+
+- 提高 todos 截止时间解析。
+- 为 quiz 增加题型选择。
+- 为 summary 增加“按知识图谱组织”的版本。
+- 将 source_refs 展示得更清晰。
+- 增加导出格式：
+  - Markdown
+  - Mermaid
+  - ICS
+  - Anki
+
+## 6. LLM 后续计划
+
+已完成：
+
+- 环境变量配置。
+- cloud/local OpenAI-compatible provider。
+- provider smoke 脚本。
+- 自动化测试不依赖真实 provider。
+
+下一步：
+
+- 写 DeepSeek 配置示例。
+- 写 Ollama/vLLM 配置示例。
+- 增加模型输出 schema repair 策略。
+- 增加 provider latency / failure 日志。
+
+## 7. 前端 Agent 体验
+
+已完成：
+
+- AgentPanel。
+- GlobalSearchPanel。
+- PostClassArtifactsPanel。
+- 历史课堂打开和来源定位。
+
+下一步：
+
+- 为 URL deep link 增加测试。
+- 优化 source_refs 的可读展示。
+- 点击图谱节点显示来源片段。
+- 时间线与 transcript/visual 双向定位。
+- 给 LLM warnings 更明显但不打扰的展示。
+
+## 8. 推荐实现顺序
+
+1. 内部规则版 `KnowledgeExtractor`。
+2. 将 extractor 接到 session end，先保证结束课堂后自动生成图谱。
+3. 将 extractor 接到录制中批量触发。
+4. 给 extractor 增加 LLM-backed 可选实现。
+5. 全局索引 rebuild 命令。
+6. Provider / embedding 安装文档。
+7. 前端 deep-link 和 source focus 测试。
+
+## 9. 验收标准
+
+内部知识抽取验收：
+
+- 只发送 `transcript.segment` 和 `image.capture`，不发送 mock
+  `knowledge.extraction`，结束课堂后仍生成知识图谱。
+- 生成的节点有稳定 label。
+- 生成的边有可解释 relation。
+- 每个节点/边尽量带 source refs。
+- 抽取失败不影响课堂保存。
+
+Agent/RAG 验收：
+
+- strict QA 不编造课堂资料外的信息。
+- grounded QA 明确标注包含模型补充。
+- LlamaIndex 不可用时自动回退词法检索。
+- 自动化测试不需要网络和 API key。

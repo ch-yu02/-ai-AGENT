@@ -1,351 +1,141 @@
-# Agent 中枢研发与前后端全栈开发任务清单
-
-## 0. 总体目标
-
-负责开发 Edu-Mate / Lecture-Link 的本地 Agent 中枢与前后端系统，实现：
-
-* 接收语音、图像、知识抽取等多源数据
-* 维护课堂上下文与知识图谱
-* 实时展示字幕、知识树和多模态记录
-* 课后调用技能模块生成总结、待办和自测题
-* 支持本地存储、导出与系统联调
-
----
-
-## 1. P0 核心任务：必须完成
-
-### 1.1 Agent 中枢框架
-
-* [ ] 搭建 Python Agent 主框架
-* [ ] 设计课堂 Session 生命周期
-
-  * [ ] 开始课堂
-  * [ ] 接收实时数据
-  * [ ] 更新课堂上下文
-  * [ ] 结束课堂
-  * [ ] 触发课后处理
-* [ ] 实现 Agent 事件调度机制
-* [ ] 实现任务队列或异步处理机制
-* [ ] 设计 Agent 模块目录结构
-
-### 1.2 统一事件接口
-
-* [ ] 编写 `API_SCHEMA.md`
-* [ ] 定义 ASR 文本输入格式
-* [ ] 定义 OCR / VLM 图片输入格式
-* [ ] 定义 SLM 知识抽取输入格式
-* [ ] 定义前端 WebSocket 推送格式
-* [ ] 定义课后技能模块输入输出格式
-* [ ] 编写模拟事件数据样例
-
-### 1.3 课堂上下文管理
-
-* [ ] 实现 `SessionManager`
-* [ ] 实现 `ContextManager`
-* [ ] 维护课堂时间线 `timeline`
-* [ ] 维护原始转写文本 `transcript`
-* [ ] 维护图片 / OCR / VLM 结果
-* [ ] 维护重要片段 `important_segments`
-* [ ] 生成供云端模型使用的压缩上下文
-
-### 1.4 知识图谱管理
-
-* [ ] 设计知识节点 `Node` 数据结构
-* [ ] 设计知识关系 `Edge` 数据结构
-* [ ] 实现 `KnowledgeGraphManager`
-* [ ] 支持新增节点
-* [ ] 支持新增边
-* [ ] 支持节点去重与合并
-* [ ] 支持按时间戳追溯来源文本
-* [ ] 支持导出 `knowledge_graph.json`
-
-### 1.5 后端服务
-
-* [ ] 搭建 FastAPI 后端
-* [ ] 实现课堂开始接口
-* [ ] 实现课堂结束接口
-* [ ] 实现事件接收接口
-* [ ] 实现历史课程读取接口
-* [ ] 实现课后技能触发接口
-* [ ] 实现 WebSocket 实时推送接口
-* [ ] 编写模拟数据输入脚本
-
-### 1.6 前端基础界面
-
-* [ ] 搭建 React / Vite 前端项目
-* [ ] 实现实时字幕显示区
-* [ ] 实现知识图谱显示区
-* [ ] 实现课堂时间线显示区
-* [ ] 实现图片 / OCR 结果显示区
-* [ ] 实现课后结果显示区
-* [ ] 接入 WebSocket 实时更新
-
-### 1.7 本地存储
-
-* [ ] 设计本地数据目录结构
-* [ ] 保存课堂元数据 `metadata.json`
-* [ ] 保存课堂转写 `transcript.md`
-* [ ] 保存课堂时间线 `timeline.json`
-* [ ] 保存知识图谱 `knowledge_graph.json`
-* [ ] 保存课后总结 `summary.md`
-* [ ] 保存待办事项 `todos.json`
-* [ ] 保存自测题 `quiz.json`
-
----
-
-## 2. P1 重要任务：展示效果核心
-
-### 2.1 Summarizer Skill
-
-* [ ] 设计总结 Prompt
-* [ ] 实现 `SummarizerSkill`
-* [ ] 输入课堂上下文和知识图谱
-* [ ] 调用云端 LLM API
-* [ ] 生成结构化复习文档
-* [ ] 保存为 `summary.md`
-* [ ] 前端展示总结结果
-
-### 2.2 Todo-Detective Skill
-
-* [ ] 设计待办提取 Prompt
-* [ ] 实现 `TodoDetectiveSkill`
-* [ ] 识别作业、考试、预习、实验等任务
-* [ ] 提取截止时间
-* [ ] 标准化待办 JSON 格式
-* [ ] 保存为 `todos.json`
-* [ ] 前端展示待办列表
-
-### 2.3 Quiz-Master Skill
-
-* [ ] 设计出题 Prompt
-* [ ] 实现 `QuizMasterSkill`
-* [ ] 根据知识图谱生成自测题
-* [ ] 生成题目、答案和解析
-* [ ] 保存为 `quiz.json`
-* [ ] 前端展示题目与答案
-* [ ] 可选：导出 Anki 格式
-
-### 2.4 云端 LLM 封装
-
-* [ ] 实现统一 `CloudLLMClient`
-* [ ] 支持 DeepSeek API
-* [ ] 可扩展支持 GPT / Qwen API
-* [ ] 支持 API Key 配置
-* [ ] 支持请求失败重试
-* [ ] 支持结果缓存
-* [ ] 支持 Prompt 模板管理
-
-### 2.5 前端交互增强
-
-* [ ] 点击知识节点显示来源文本
-* [ ] 点击时间线跳转对应内容
-* [ ] 图片与语音片段按时间戳对齐展示
-* [ ] 课后一键生成总结、待办、自测题
-* [ ] 支持历史课程查看
-* [ ] 优化触摸屏显示布局
-
----
-
-## 3. P2 加分任务：有余力再做
-
-### 3.1 数据导出
-
-* [ ] 导出完整课堂 Markdown 笔记
-* [ ] 导出知识图谱 Mermaid 格式
-* [ ] 导出待办事项 ICS 文件
-* [ ] 导出 Anki 记忆卡片
-* [ ] 支持一键打包课程数据
-
-### 3.2 系统配置
-
-* [ ] 添加 API Key 配置页面
-* [ ] 添加课程名称设置
-* [ ] 添加云端 / 本地模式切换
-* [ ] 添加日志查看页面
-* [ ] 添加模型服务状态显示
-
-### 3.3 稳定性与部署
-
-* [ ] 编写后端启动脚本
-* [ ] 编写前端启动脚本
-* [ ] 编写一键启动脚本
-* [ ] 支持 Ubuntu 开机自启
-* [ ] 添加异常兜底逻辑
-* [ ] 添加系统运行日志
-* [ ] 添加基础性能监控
-
----
-
-## 4. 与算法组的接口待办
-
-* [ ] 确认 ASR 输出格式
-* [ ] 确认 ASR 输出方式
-
-  * [ ] HTTP
-  * [ ] WebSocket
-  * [ ] 文件监听
-  * [ ] Python 函数调用
-* [ ] 确认 OCR / VLM 输出格式
-* [ ] 确认 SLM 实体关系抽取格式
-* [ ] 确认知识节点的字段定义
-* [ ] 确认时间戳格式
-* [ ] 确认模型异常时的处理方式
-* [ ] 编写接口联调样例
-
----
-
-## 5. 与硬件组的接口待办
-
-* [ ] 确认 Ubuntu 部署环境
-* [ ] 确认后端服务运行方式
-* [ ] 确认前端显示方式
-* [ ] 确认触摸屏分辨率
-* [ ] 确认图片输入路径
-* [ ] 确认麦克风 / 摄像头数据由谁采集
-* [ ] 确认本地数据保存路径
-* [ ] 确认是否需要开机自启
-* [ ] 确认离线模式下的功能边界
-
----
-
-## 6. 推荐开发顺序
-
-### 第 1 阶段：打通数据流
-
-* [ ] FastAPI 后端
-* [ ] WebSocket 推送
-* [ ] 模拟 ASR 输入
-* [ ] 前端实时字幕显示
-* [ ] 课堂 Session 创建与结束
-
-### 第 2 阶段：打通知识图谱
-
-* [ ] 知识节点数据结构
-* [ ] 知识关系数据结构
-* [ ] 图谱增量更新
-* [ ] 前端图谱展示
-* [ ] 点击节点查看来源
-
-### 第 3 阶段：完成本地存储
-
-* [ ] 保存 transcript
-* [ ] 保存 timeline
-* [ ] 保存 knowledge_graph
-* [ ] 保存 metadata
-* [ ] 支持历史课程读取
-
-### 第 4 阶段：完成课后技能
-
-* [ ] Summarizer
-* [ ] Todo-Detective
-* [ ] Quiz-Master
-* [ ] 云端 API 封装
-* [ ] 前端展示结果
-
-### 第 5 阶段：系统联调
-
-* [ ] 接入真实 ASR 输出
-* [ ] 接入真实 OCR / VLM 输出
-* [ ] 接入真实 SLM 知识抽取输出
-* [ ] 在 DK-2500 / Ubuntu 环境部署
-* [ ] 完成端到端演示
-
----
-
-## 7. MVP 最小可行版本
-
-MVP 目标：即使算法和硬件模块暂未完全完成，也能独立演示系统主链路。
-
-### MVP 输入
-
-* [ ] 模拟课堂文本
-* [ ] 模拟 OCR 图片内容
-* [ ] 模拟知识节点
-
-### MVP 处理
-
-* [ ] Agent 接收事件
-* [ ] 更新课堂上下文
-* [ ] 更新知识图谱
-* [ ] 保存本地数据
-* [ ] 调用课后技能
-
-### MVP 展示
-
-* [ ] 实时字幕滚动
-* [ ] 知识树实时增长
-* [ ] 图片内容插入时间线
-* [ ] 一键生成总结
-* [ ] 一键生成待办
-* [ ] 一键生成自测题
-
----
-
-## 8. 最终交付物
-
-* [ ] Agent 后端系统
-* [ ] 前端展示界面
-* [ ] 统一接口文档 `API_SCHEMA.md`
-* [ ] 课堂上下文管理模块
-* [ ] 知识图谱管理模块
-* [ ] 三个 Skill 模块
-
-  * [ ] Summarizer
-  * [ ] Todo-Detective
-  * [ ] Quiz-Master
-* [ ] 云端 LLM API 封装
-* [ ] 本地存储与导出模块
-* [ ] 模拟数据 Demo
-* [ ] 系统联调文档
-* [ ] 比赛展示 Demo 流程
-
----
-
-## 9. 建议目录结构
-
-```text
-lecture-link/
-  backend/
-    app/
-      main.py
-      api/
-      core/
-      models/
-      skills/
-      storage/
-      integrations/
-    scripts/
-    tests/
-
-  frontend/
-    src/
-      components/
-      pages/
-      services/
-      stores/
-
-  docs/
-    API_SCHEMA.md
-    DEPLOYMENT.md
-    DEMO_FLOW.md
-
-  data/
-    sessions/
-    mock/
+# EDU-Mate Active Task List
+
+本文件是 `AGENTS.md` 的任务清单版。项目当前状态、架构边界和开发规则以
+`AGENTS.md` 为准；本文件只保留后续开发和验收用的 checklist。
+
+## 0. 当前能力基线
+
+已完成：
+
+- [x] FastAPI 后端基础服务
+- [x] React / Vite 前端基础界面
+- [x] 课堂开始、查询、结束
+- [x] 实时事件接收 `POST /events`
+- [x] WebSocket 实时推送 `/ws/{session_id}`
+- [x] 字幕、图片/OCR、时间线展示
+- [x] 知识图谱管理和增量 patch
+- [x] 本地保存 metadata/transcript/timeline/knowledge_graph
+- [x] 历史课堂列表、详情、删除
+- [x] mock sender 向前端创建的 session 喂数据
+- [x] Agent chat：QA / summary / todos / quiz
+- [x] 课后 summary/todos 自动产物
+- [x] quiz 按需生成和保存
+- [x] Agent 对话和 artifacts 保存
+- [x] 单节课 RAG 词法检索与可选 LlamaIndex
+- [x] 跨课堂搜索第一版
+- [x] 可选全局 LlamaIndex 索引
+- [x] 可选 cloud/local LLM provider
+- [x] `scripts/dev.sh` 本地开发脚本
+- [x] 输入数据契约 `docs/INPUT_DATA_CONTRACT.md`
+
+明确边界：
+
+- [x] 外部模块只需发送 `transcript.segment` 和 `image.capture`
+- [x] `knowledge.extraction` 是 EDU-Mate 内部管线事件或 mock/debug 数据
+- [ ] 真实内部知识抽取模块尚未实现
+
+## 1. P0：内部知识抽取模块
+
+目标：让真实图谱增长不依赖 mock sender 发送 `knowledge.extraction`。
+
+- [ ] 新建内部知识抽取模块目录，例如 `backend/app/extraction/`
+- [ ] 定义 `KnowledgeExtractor` 输入输出接口
+- [ ] 从 `ClassroomContext.transcript` 读取近期字幕
+- [ ] 从 `ClassroomContext.visuals` 读取 OCR/VLM 文本
+- [ ] 生成内部 `KnowledgeExtraction`
+- [ ] 保证 `source_segment_ids` 和 `source_visual_ids` 可追溯
+- [ ] 生成稳定 entity name、entity_id、relation
+- [ ] 将抽取结果交给 `ContextManager` / `KnowledgeGraphManager`
+- [ ] 确定触发策略：每 N 条字幕、每 N 秒、或 session end
+- [ ] 避免在 `POST /events` 热路径中阻塞太久
+- [ ] 增加规则版 extractor，先不依赖云端 LLM
+- [ ] 增加 LLM-backed extractor 可选实现
+- [ ] 增加单元测试和 fixture
+
+验收：
+
+- [ ] 只发送 ASR/OCR 输入，前端知识图谱也能增长
+- [ ] mock sender 不再是图谱增长的唯一方式
+- [ ] 抽取失败不会影响字幕/OCR 实时展示
+- [ ] 来源引用能跳回 transcript 或 visual
+
+## 2. P0：能力边界与接口联调
+
+- [ ] 与 ASR 组确认 `transcript.segment` HTTP 输入
+- [ ] 与 OCR/VLM 组确认 `image.capture` HTTP 输入
+- [ ] 与硬件组确认后端局域网访问方式
+- [ ] 与硬件组确认图片保存路径或上传策略
+- [ ] 与前端确认 session_id 展示与复制流程
+- [ ] 用 `docs/INPUT_DATA_CONTRACT.md` 完成一次端到端联调
+- [ ] 确认知识抽取由 EDU-Mate 项目内部完成，不要求外部 SLM 输出
+
+## 3. P1：RAG 与 LLM 使用说明
+
+- [ ] 补充真实 LlamaIndex 安装说明
+- [ ] 补充 embedding provider 选择说明
+- [ ] 补充 DeepSeek/OpenAI-compatible provider 配置说明
+- [ ] 补充 Ollama/vLLM 本地模型示例
+- [ ] 说明 `RAG_QUERY_BACKEND=llamaindex`
+- [ ] 说明 `GLOBAL_SEARCH_BACKEND=llamaindex`
+- [ ] 说明 provider 失败时的回退行为
+
+验收：
+
+- [ ] 新开发者能按文档接入一个真实 provider
+- [ ] 没有 API key 时默认测试仍可通过
+
+## 4. P1：索引维护
+
+- [ ] 增加全局索引 rebuild 命令
+- [ ] 在 `scripts/dev.sh` 中加入 rebuild 入口
+- [ ] 增加全局索引 manifest 校验说明
+- [ ] 增加坏历史目录跳过测试
+- [ ] 增加索引回退 warning 测试
+
+验收：
+
+- [ ] 首次搜索不必承担全部构建成本
+- [ ] 删除历史后索引能正确重建或失效
+
+## 5. P1：前端 Agent 与历史体验
+
+- [ ] 增加 URL 深链接相关前端测试
+- [ ] 增加 focused source 的 store 测试
+- [ ] 优化 AgentPanel 的 loading/error/success 状态
+- [ ] 优化 source_refs 展示和跳转
+- [ ] 知识图谱节点点击显示来源文本
+- [ ] 时间线点击跳转对应内容
+- [ ] 图片与语音片段按时间戳对齐展示
+
+## 6. P2：导出与部署
+
+- [ ] 导出完整课堂 Markdown 笔记
+- [ ] 导出知识图谱 Mermaid 格式
+- [ ] 导出待办事项 ICS 文件
+- [ ] 导出 quiz / Anki 格式
+- [ ] 一键打包课程数据
+- [ ] 添加 API key / provider 配置页面
+- [ ] 添加日志查看页面
+- [ ] 添加模型服务状态显示
+- [ ] 编写 Ubuntu / DK 设备部署文档
+- [ ] 编写开机自启服务配置
+
+## 7. 常用验收命令
+
+```bash
+scripts/dev.sh compile
+scripts/dev.sh test
+scripts/dev.sh build
 ```
 
----
+局域网联调：
 
-## 10. 当前最先做的 10 件事
+```bash
+BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
+```
 
-* [ ] 创建项目仓库
-* [ ] 搭建 FastAPI 后端
-* [ ] 搭建 React 前端
-* [ ] 编写 `API_SCHEMA.md`
-* [ ] 定义事件数据结构
-* [ ] 实现 SessionManager
-* [ ] 实现 ContextManager
-* [ ] 实现 KnowledgeGraphManager
-* [ ] 编写模拟 ASR 输入脚本
-* [ ] 前端显示实时字幕和知识图谱
+mock 数据：
 
+```bash
+scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
+```

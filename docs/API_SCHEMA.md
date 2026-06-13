@@ -6,10 +6,11 @@ mock sender 联调使用。
 当前后端职责：
 
 1. 创建课堂 session。
-2. 接收实时事件：字幕、图片/OCR/VLM、知识抽取。
-3. 更新课堂上下文和知识图谱。
-4. 通过 WebSocket 推送增量更新。
-5. 结束课堂并保存本地文件。
+2. 接收外部实时输入：字幕、图片/OCR/VLM。
+3. 在 EDU-Mate 内部生成知识抽取结果。
+4. 更新课堂上下文和知识图谱。
+5. 通过 WebSocket 推送增量更新。
+6. 结束课堂并保存本地文件。
 
 ## 1. 基础约定
 
@@ -287,7 +288,9 @@ Content-Type: application/json
 
 ### POST /events
 
-接收一条课堂实时事件。所有 ASR、OCR/VLM、SLM 知识抽取结果都走这个入口。
+接收一条课堂实时事件。外部模块主要发送 ASR 和 OCR/VLM 输入；知识抽取由
+EDU-Mate 项目内部完成，`knowledge.extraction` 主要作为内部事件、mock
+数据和调试格式使用。
 
 统一请求信封 `RealtimeEvent`：
 
@@ -314,6 +317,9 @@ transcript.segment
 image.capture
 knowledge.extraction
 ```
+
+对外部联调方来说，必须发送的是 `transcript.segment` 和 `image.capture`。
+`knowledge.extraction` 不要求外部算法组发送。
 
 响应状态码：`202 Accepted`
 
@@ -418,7 +424,8 @@ payload 字段：
 
 ### 6.3 knowledge.extraction
 
-SLM 或知识抽取模块发送的一次实体/关系抽取结果。
+EDU-Mate 内部知识抽取模块生成的一次实体/关系抽取结果。外部模块正常联调
+时不需要发送该事件；它保留为内部管线、mock sender 和后端调试使用。
 
 示例：
 
@@ -728,8 +735,9 @@ GET /history/{session_id}
 
 ## 10. Mock Sender
 
-mock sender 用于在真实 ASR/OCR/SLM 未接入时，自动向后端喂一组中文课堂
-模拟数据。它不会创建课堂；课堂开始必须先从前端页面手动发起。
+mock sender 用于在真实 ASR/OCR/VLM 和内部知识抽取模块未完全接入时，
+自动向后端喂一组中文课堂模拟数据。它不会创建课堂；课堂开始必须先从
+前端页面手动发起。
 
 先启动后端：
 
@@ -766,7 +774,7 @@ mock sender 当前会模拟：
 1. 使用已有课堂 session。
 2. 发送多条 `transcript.segment`。
 3. 发送 `image.capture`，包含 OCR 文本和 VLM 描述。
-4. 发送多条 `knowledge.extraction`，驱动知识图谱增量更新。
+4. 发送多条模拟的内部 `knowledge.extraction`，驱动知识图谱增量更新。
 5. 默认结束课堂并保存本地文件；加 `--no-end` 时保留 recording 状态。
 
 ## 11. 前端接入建议
