@@ -147,6 +147,54 @@ class LocalStorageTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.storage.session_index_dir("../outside")
 
+    def test_session_image_path_resolves_local_uri_inside_images_dir(self) -> None:
+        images_dir = self.storage.session_dir(self.session_id) / "images"
+        images_dir.mkdir(parents=True)
+        image_file = images_dir / "img_001.jpg"
+        image_file.write_bytes(b"fake image")
+
+        resolved = self.storage.session_image_path(
+            self.session_id,
+            "img_001",
+            f"local://sessions/{self.session_id}/images/img_001.jpg",
+        )
+
+        self.assertEqual(resolved, image_file.resolve())
+
+    def test_session_image_path_rejects_paths_outside_images_dir(self) -> None:
+        images_dir = self.storage.session_dir(self.session_id) / "images"
+        images_dir.mkdir(parents=True)
+        outside = self.base_dir / "outside.jpg"
+        outside.write_bytes(b"fake image")
+
+        with self.assertRaises(FileNotFoundError):
+            self.storage.session_image_path(
+                self.session_id,
+                "img_001",
+                f"local://sessions/{self.session_id}/images/../outside.jpg",
+            )
+
+    def test_save_session_image_writes_bytes_under_images_dir(self) -> None:
+        path = self.storage.save_session_image(
+            self.session_id,
+            "img_001",
+            b"fake image",
+            "image/png",
+        )
+
+        self.assertEqual(path.name, "img_001.png")
+        self.assertEqual(path.read_bytes(), b"fake image")
+        self.assertEqual(path.parent, (self.base_dir / self.session_id / "images").resolve())
+
+    def test_save_session_image_rejects_unsupported_content_type(self) -> None:
+        with self.assertRaises(ValueError):
+            self.storage.save_session_image(
+                self.session_id,
+                "img_001",
+                b"fake image",
+                "application/octet-stream",
+            )
+
     def test_list_sessions_returns_history_summaries_newest_first(self) -> None:
         older_session = self._session().model_copy(
             update={

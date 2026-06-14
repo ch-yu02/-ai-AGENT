@@ -31,7 +31,8 @@
 
 import os
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, status
+from fastapi.responses import FileResponse
 
 from backend.app.core import (
     ContextNotFoundError,
@@ -51,6 +52,7 @@ from backend.app.models import (
     SessionHistoryListResponse,
     StartSessionRequest,
     WebSocketMessage,
+    ImageCapture,
 )
 from backend.app.skills import SummarizerSkill, TodoDetectiveSkill
 from backend.app.storage import local_storage
@@ -159,6 +161,60 @@ async def get_history_session(session_id: str) -> SessionHistoryDetail:
         return local_storage.read_session(session_id)
     except (FileNotFoundError, ValueError):
         raise HTTPException(status_code=404, detail="Saved session not found")
+
+
+@router.get("/{session_id}/images/{image_id}")
+async def get_session_image(session_id: str, image_id: str) -> FileResponse:
+    """Serve a persisted classroom image by stable image_id.
+
+    The endpoint intentionally resolves through LocalStorage rather than
+    trusting raw image paths. That keeps future uploads and hardware-captured
+    files constrained to ``data/sessions/{session_id}/images``.
+    """
+    image_path = _image_path_for_session(session_id, image_id)
+    try:
+        path = local_storage.session_image_path(session_id, image_id, image_path)
+    except (FileNotFoundError, ValueError):
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(path)
+
+
+@router.put("/{session_id}/images/{image_id}", status_code=status.HTTP_201_CREATED)
+async def upload_session_image(
+    session_id: str,
+    image_id: str,
+    request: Request,
+) -> dict[str, str]:
+    """Upload raw classroom image bytes.
+
+    Hardware/camera modules can call this before or after sending the matching
+    ``image.capture`` event. The returned ``image_path`` is the stable local URI
+    they should place in that event payload.
+    """
+    try:
+        session_manager.get_session(session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    content = await request.body()
+    if len(content) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="Image too large")
+
+    try:
+        path = local_storage.save_session_image(
+            session_id=session_id,
+            image_id=image_id,
+            content=content,
+            content_type=request.headers.get("content-type"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "session_id": session_id,
+        "image_id": image_id,
+        "image_path": f"local://sessions/{session_id}/images/{path.name}",
+    }
 
 
 @router.delete("/{session_id}/history", response_model=SessionDeleteResponse)
@@ -292,6 +348,33 @@ def _run_internal_knowledge_extraction(session_id: str, context) -> dict[str, ob
         "processed_source_ids": result.processed_source_ids,
         "errors": [error.model_dump() for error in result.errors],
     }
+
+
+def _image_path_for_session(session_id: str, image_id: str) -> str | None:
+    """Find the image_path recorded in live context or saved history."""
+    try:
+        context = context_manager.get_context(session_id)
+    except ContextNotFoundError:
+        context = None
+    if context is not None:
+        for visual in context.visuals:
+            if visual.image_id == image_id:
+                return visual.image_path
+
+    try:
+        detail = local_storage.read_session(session_id)
+    except (FileNotFoundError, ValueError):
+        return None
+    for item in detail.timeline:
+        if item.type != "visual":
+            continue
+        try:
+            visual = ImageCapture.model_validate(item.data)
+        except ValueError:
+            continue
+        if visual.image_id == image_id:
+            return visual.image_path
+    return None
 
 
 def _generate_and_save_post_class_artifacts(

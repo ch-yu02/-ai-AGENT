@@ -241,6 +241,7 @@ describe("classroomReducer", () => {
               summary: "将信号从时域表示转换到频域表示的数学工具",
               level: 0,
               importance: 0.92,
+              source_refs: [{ type: "segment", id: "seg_001", ts: 1 }],
             },
             edge: null,
             data: {},
@@ -266,6 +267,7 @@ describe("classroomReducer", () => {
               source: "node_fourier",
               target: "node_freq",
               relation: "maps_to",
+              source_refs: [{ type: "event", id: "ext_001" }],
             },
             data: {},
           },
@@ -283,6 +285,8 @@ describe("classroomReducer", () => {
     expect(state.graph.nodes).toHaveLength(2);
     expect(state.graph.edges).toHaveLength(1);
     expect(state.graph.nodes[0].label).toBe("傅里叶变换");
+    expect(state.graph.nodes[0].source_refs?.[0].id).toBe("seg_001");
+    expect(state.graph.edges[0].source_refs?.[0].id).toBe("ext_001");
   });
 
   it("updates existing graph nodes by node_id", () => {

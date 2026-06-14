@@ -90,6 +90,38 @@ class GlobalLlamaIndexService:
         response = query_engine.query(query)
         return self._hits_from_response(response, limit=limit)
 
+    def rebuild(
+        self,
+        *,
+        records: list[dict],
+        documents: list[RagDocument],
+    ) -> dict[str, Any]:
+        """Force rebuilding the persisted global LlamaIndex.
+
+        Search already rebuilds lazily when the manifest changes, but a manual
+        command is useful before demos or after changing embedding/provider
+        settings. This method intentionally requires the caller to provide both
+        the auditable JSON records and the RAG documents so storage/search code
+        remains the only place that knows how to read saved sessions.
+        """
+        self.index_root.mkdir(parents=True, exist_ok=True)
+        manifest = self._manifest(records)
+        if self.index_dir.exists():
+            shutil.rmtree(self.index_dir)
+        self.index_dir.mkdir(parents=True, exist_ok=True)
+
+        index = self._build_index(documents)
+        storage_context = getattr(index, "storage_context", None)
+        persist = getattr(storage_context, "persist", None)
+        if not callable(persist):
+            raise RuntimeError("LlamaIndex index does not expose storage_context.persist")
+        persist(persist_dir=str(self.index_dir))
+        self.manifest_path.write_text(
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return manifest
+
     def _load_or_rebuild_index(
         self,
         documents: list[RagDocument],

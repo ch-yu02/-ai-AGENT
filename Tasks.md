@@ -52,6 +52,7 @@
 - [x] 避免在 `POST /events` 热路径中阻塞太久
 - [x] 增加 LLM-backed extractor，并停用规则版生产入口
 - [x] 增加单元测试和 fixture
+- [x] 增加跨课程抽取质量 fixture 基线
 - [x] 增加录制中每 N 条字幕或每 N 秒的批量触发
 
 验收：
@@ -76,10 +77,11 @@
 
 ## 3. P1：RAG 与 LLM 使用说明
 
+- [x] 补充 LLM provider 配置说明
 - [ ] 补充真实 LlamaIndex 安装说明
 - [ ] 补充 embedding provider 选择说明
-- [ ] 补充 DeepSeek/OpenAI-compatible provider 配置说明
-- [ ] 补充 Ollama/vLLM 本地模型示例
+- [x] 补充 DeepSeek/OpenAI-compatible provider 配置说明
+- [x] 补充 Ollama/vLLM 本地模型示例
 - [ ] 说明 `RAG_QUERY_BACKEND=llamaindex`
 - [ ] 说明 `GLOBAL_SEARCH_BACKEND=llamaindex`
 - [ ] 说明 provider 失败时的回退行为
@@ -91,8 +93,8 @@
 
 ## 4. P1：索引维护
 
-- [ ] 增加全局索引 rebuild 命令
-- [ ] 在 `scripts/dev.sh` 中加入 rebuild 入口
+- [x] 增加全局索引 rebuild 命令
+- [x] 在 `scripts/dev.sh` 中加入 rebuild 入口
 - [ ] 增加全局索引 manifest 校验说明
 - [ ] 增加坏历史目录跳过测试
 - [ ] 增加索引回退 warning 测试
@@ -108,7 +110,7 @@
 - [ ] 增加 focused source 的 store 测试
 - [ ] 优化 AgentPanel 的 loading/error/success 状态
 - [ ] 优化 source_refs 展示和跳转
-- [ ] 知识图谱节点点击显示来源文本
+- [x] 知识图谱节点点击显示来源文本
 - [ ] 时间线点击跳转对应内容
 - [ ] 图片与语音片段按时间戳对齐展示
 
@@ -124,6 +126,11 @@
 - [ ] 添加模型服务状态显示
 - [ ] 编写 Ubuntu / DK 设备部署文档
 - [ ] 编写开机自启服务配置
+
+## 8. 已补充的输入/文件能力
+
+- [x] 增加课堂图片 raw bytes 上传接口
+- [x] 增加课堂图片静态读取接口
 
 ## 7. 常用验收命令
 

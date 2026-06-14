@@ -587,6 +587,57 @@ button:disabled {
   font-weight: 700;
 }
 
+.graph-source-block {
+  margin-top: 0.55rem;
+}
+
+.graph-source-toggle {
+  background: #ffffff;
+  border: 1px solid #d4dce8;
+  border-radius: 6px;
+  color: #4b5870;
+  cursor: pointer;
+  font-size: 0.78rem;
+  padding: 0.2rem 0.45rem;
+}
+
+.graph-source-empty {
+  color: #9aa5b8;
+  font-size: 0.76rem;
+  margin-top: 0.45rem;
+}
+
+.graph-source-list {
+  display: grid;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+}
+
+.graph-source-ref {
+  border-left: 2px solid #9bbcff;
+  color: #536174;
+  font-size: 0.78rem;
+  padding-left: 0.5rem;
+}
+
+.graph-source-ref span {
+  color: #2563eb;
+  font-weight: 700;
+  margin-right: 0.35rem;
+}
+
+.graph-source-ref code {
+  color: #334155;
+}
+
+.graph-source-ref small {
+  margin-left: 0.35rem;
+}
+
+.graph-source-ref p {
+  margin: 0.2rem 0 0;
+}
+
 .graph-canvas {
   border: 1px solid #e3e9f1;
   border-radius: 8px;

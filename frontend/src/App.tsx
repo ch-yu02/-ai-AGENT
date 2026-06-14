@@ -390,7 +390,12 @@ function App() {
           />
           <TimelinePanel focusedSource={focusedSource} timeline={state.timeline} />
           <VisualOcrPanel focusedSource={focusedSource} visuals={state.visuals} />
-          <KnowledgeGraphPanel focusedSource={focusedSource} graph={state.graph} />
+          <KnowledgeGraphPanel
+            focusedSource={focusedSource}
+            graph={state.graph}
+            transcript={state.transcript}
+            visuals={state.visuals}
+          />
           <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
           <AgentPanel
             persistedMessages={state.postClassArtifacts.agent_messages}

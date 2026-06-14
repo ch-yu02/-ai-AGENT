@@ -115,6 +115,21 @@ class GlobalSearchServiceTest(unittest.TestCase):
         )
         self.assertTrue(index_path.exists())
 
+    def test_rebuild_global_index_writes_snapshot(self) -> None:
+        self._save_session(
+            session_id="lec_rebuild_index",
+            title="通信原理第11讲",
+            course="通信原理",
+            text="信道容量描述信道传输信息的上限。",
+            node_label="信道容量",
+        )
+
+        result = self.service.rebuild_global_index()
+
+        self.assertEqual(result["document_count"], 2)
+        self.assertTrue(Path(str(result["documents_path"])).exists())
+        self.assertEqual(result["llamaindex"]["status"], "skipped")
+
     def test_search_uses_optional_global_llama_index_backend(self) -> None:
         self._save_session(
             session_id="lec_vector_index",

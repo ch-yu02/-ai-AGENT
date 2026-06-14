@@ -59,6 +59,12 @@ Current extraction state:
   errors and graph generation is skipped. EDU-Mate does not automatically fall
   back to rule-based graph extraction.
 
+Current image serving state:
+
+- Raw image bytes can be uploaded with `PUT /sessions/{session_id}/images/{image_id}`.
+- Images are served from `GET /sessions/{session_id}/images/{image_id}`.
+- Served files are constrained to `data/sessions/{session_id}/images/`.
+
 ## Commands
 
 Preferred helper:
@@ -101,6 +107,13 @@ Manually smoke-test configured LLM provider:
 
 ```bash
 scripts/dev.sh llm-smoke
+```
+
+Rebuild global search index snapshots:
+
+```bash
+scripts/dev.sh rebuild-global-index
+scripts/dev.sh rebuild-global-index --llamaindex
 ```
 
 LAN testing:
@@ -392,10 +405,9 @@ Highest priority:
 Next:
 
 1. Document real LlamaIndex/embedding provider setup.
-2. Add a global index rebuild command to avoid first-search rebuild cost.
-3. Add frontend tests for URL deep-link and focused source behavior.
-4. Add Ollama/vLLM local model setup examples.
-5. Improve visual image serving/upload if frontend must display real images.
+2. Add frontend tests for URL deep-link and focused source behavior.
+3. Add Ollama/vLLM local model setup examples.
+4. Improve visual image upload if frontend must display real images.
 
 Later:
 
@@ -412,3 +424,4 @@ Later:
 - `docs/API_SCHEMA.md`: HTTP/WebSocket/Agent API schema.
 - `docs/INPUT_DATA_CONTRACT.md`: ASR/OCR/hardware input contract.
 - `docs/AGENT_DEVELOPMENT_PLAN.md`: Agent/RAG focused roadmap derived from this guide.
+- `docs/LLM_PROVIDER_SETUP.md`: DeepSeek/OpenAI/local provider setup.

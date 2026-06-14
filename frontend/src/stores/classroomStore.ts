@@ -436,6 +436,7 @@ function parseKnowledgeNode(value: unknown): KnowledgeNode | null {
     summary: typeof data.summary === "string" ? data.summary : null,
     level: typeof data.level === "number" ? data.level : undefined,
     importance: typeof data.importance === "number" ? data.importance : null,
+    source_refs: parseSourceRefs(data.source_refs),
   };
 }
 
@@ -457,7 +458,28 @@ function parseKnowledgeEdge(value: unknown): KnowledgeEdge | null {
     source: data.source,
     target: data.target,
     relation: data.relation,
+    source_refs: parseSourceRefs(data.source_refs),
   };
+}
+
+function parseSourceRefs(value: unknown) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.flatMap((item) => {
+    const data = readObject(item);
+    if (!data || typeof data.type !== "string" || typeof data.id !== "string") {
+      return [];
+    }
+    return [
+      {
+        type: data.type,
+        id: data.id,
+        ts: typeof data.ts === "number" ? data.ts : null,
+        text: typeof data.text === "string" ? data.text : null,
+      },
+    ];
+  });
 }
 
 function isTranscriptSegment(value: unknown): value is TranscriptSegment {

@@ -2,7 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import { EmptyState } from "./EmptyState";
 import type { GlobalSearchSourceRef } from "../types/agent";
-import type { KnowledgeEdge, KnowledgeGraphView, KnowledgeNode } from "../types/classroom";
+import type {
+  KnowledgeEdge,
+  KnowledgeGraphView,
+  KnowledgeNode,
+  ImageCapture,
+  SourceRef,
+  TranscriptSegment,
+} from "../types/classroom";
 
 // 知识图谱面板。
 //
@@ -16,11 +23,18 @@ import type { KnowledgeEdge, KnowledgeGraphView, KnowledgeNode } from "../types/
 type KnowledgeGraphPanelProps = {
   graph: KnowledgeGraphView;
   focusedSource?: GlobalSearchSourceRef | null;
+  transcript?: TranscriptSegment[];
+  visuals?: ImageCapture[];
 };
 
 type GraphViewMode = "list" | "graph";
 
-export function KnowledgeGraphPanel({ graph, focusedSource }: KnowledgeGraphPanelProps) {
+export function KnowledgeGraphPanel({
+  graph,
+  focusedSource,
+  transcript = [],
+  visuals = [],
+}: KnowledgeGraphPanelProps) {
   // 用户可以在“列表”和“图形”之间切换。
   // 默认列表，因为它对 mock sender 联调最可靠：任何节点/边都能直接读出来。
   const [viewMode, setViewMode] = useState<GraphViewMode>("list");
@@ -71,6 +85,8 @@ export function KnowledgeGraphPanel({ graph, focusedSource }: KnowledgeGraphPane
               focusedSource={focusedSource}
               graph={graph}
               nodeById={nodeById}
+              transcript={transcript}
+              visuals={visuals}
             />
           ) : (
             <KnowledgeGraphCanvas
@@ -89,11 +105,20 @@ type KnowledgeGraphListProps = {
   focusedSource?: GlobalSearchSourceRef | null;
   graph: KnowledgeGraphView;
   nodeById: Map<string, KnowledgeNode>;
+  transcript: TranscriptSegment[];
+  visuals: ImageCapture[];
 };
 
-function KnowledgeGraphList({ focusedSource, graph, nodeById }: KnowledgeGraphListProps) {
+function KnowledgeGraphList({
+  focusedSource,
+  graph,
+  nodeById,
+  transcript,
+  visuals,
+}: KnowledgeGraphListProps) {
   const itemRefs = useRef<Record<string, HTMLElement | null>>({});
   const focusedId = focusedGraphId(focusedSource);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!focusedId) {
@@ -123,6 +148,14 @@ function KnowledgeGraphList({ focusedSource, graph, nodeById }: KnowledgeGraphLi
               <span>{node.type || "concept"}</span>
             </div>
             <p>{node.summary || "暂无摘要"}</p>
+            <SourceRefToggle
+              expanded={expandedId === node.node_id}
+              id={node.node_id}
+              refs={node.source_refs ?? []}
+              transcript={transcript}
+              visuals={visuals}
+              onToggle={setExpandedId}
+            />
             {typeof node.importance === "number" ? (
               <meter min="0" max="1" value={node.importance}>
                 {node.importance}
@@ -147,12 +180,84 @@ function KnowledgeGraphList({ focusedSource, graph, nodeById }: KnowledgeGraphLi
             >
               {nodeLabel(edge.source, nodeById)} <span>{edge.relation}</span>{" "}
               {nodeLabel(edge.target, nodeById)}
+              <SourceRefToggle
+                expanded={expandedId === edge.edge_id}
+                id={edge.edge_id}
+                refs={edge.source_refs ?? []}
+                transcript={transcript}
+                visuals={visuals}
+                onToggle={setExpandedId}
+              />
             </div>
           ))
         )}
       </div>
     </div>
   );
+}
+
+type SourceRefToggleProps = {
+  expanded: boolean;
+  id: string;
+  refs: SourceRef[];
+  transcript: TranscriptSegment[];
+  visuals: ImageCapture[];
+  onToggle: (id: string | null) => void;
+};
+
+function SourceRefToggle({
+  expanded,
+  id,
+  refs,
+  transcript,
+  visuals,
+  onToggle,
+}: SourceRefToggleProps) {
+  if (refs.length === 0) {
+    return <div className="graph-source-empty">暂无来源</div>;
+  }
+
+  return (
+    <div className="graph-source-block">
+      <button
+        className="graph-source-toggle"
+        type="button"
+        onClick={() => onToggle(expanded ? null : id)}
+      >
+        来源 {refs.length}
+      </button>
+      {expanded ? (
+        <div className="graph-source-list">
+          {refs.map((ref) => (
+            <div className="graph-source-ref" key={`${ref.type}-${ref.id}-${ref.ts ?? ""}`}>
+              <span>{ref.type}</span>
+              <code>{ref.id}</code>
+              {typeof ref.ts === "number" ? <small>{ref.ts.toFixed(2)}s</small> : null}
+              <p>{sourceRefText(ref, transcript, visuals)}</p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function sourceRefText(
+  ref: SourceRef,
+  transcript: TranscriptSegment[],
+  visuals: ImageCapture[],
+): string {
+  if (ref.text) {
+    return ref.text;
+  }
+  if (ref.type === "segment") {
+    return transcript.find((segment) => segment.segment_id === ref.id)?.text ?? "字幕来源未加载";
+  }
+  if (ref.type === "visual") {
+    const visual = visuals.find((item) => item.image_id === ref.id);
+    return visual?.ocr_text || visual?.caption || "视觉来源未加载";
+  }
+  return "内部抽取事件";
 }
 
 type KnowledgeGraphCanvasProps = {

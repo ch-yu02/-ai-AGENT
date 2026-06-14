@@ -323,7 +323,20 @@ ClassroomContext.timeline
 
 ### 5.2 当前图片传输约定
 
-MVP 阶段后端不接收二进制图片上传。`image.capture` 只接收图片路径和处理结果。
+后端支持两种图片传输方式：
+
+1. 推荐：先上传图片 bytes，再把返回的 `image_path` 放入 `image.capture`。
+2. 调试：只发送图片路径和 OCR/VLM 处理结果。
+
+图片上传：
+
+```text
+PUT /sessions/{session_id}/images/{image_id}
+Content-Type: image/jpeg | image/png | image/webp
+```
+
+请求体是图片二进制内容。响应中的 `image_path` 可直接用于后续
+`image.capture.payload.image_path`。
 
 推荐路径格式：
 
@@ -337,7 +350,13 @@ local://sessions/{session_id}/images/{image_id}.jpg
 /absolute/path/to/image.jpg
 ```
 
-如果要让前端直接显示真实图片，后续需要新增静态文件服务或图片上传接口。
+前端或调试工具可读取：
+
+```text
+GET /sessions/{session_id}/images/{image_id}
+```
+
+后端只服务课堂目录下的图片文件，不直接暴露任意本机绝对路径。
 
 ### 5.3 最小可用 payload
 

@@ -284,6 +284,16 @@ Content-Type: application/json
 - `hits`：命中来源，包含 `session_id`、课堂标题、课程、分数和 `source_ref`。
 - `warnings`：坏历史目录跳过、LlamaIndex 回退等非致命提示。
 
+全局索引可手动重建：
+
+```bash
+scripts/dev.sh rebuild-global-index
+scripts/dev.sh rebuild-global-index --llamaindex
+```
+
+不带 `--llamaindex` 时只重建可审计的 `documents.json` 快照；带参数时会同时
+尝试重建 `data/indexes/global/llama_index/`。
+
 ## 5. 实时事件接口
 
 ### POST /events
@@ -421,6 +431,35 @@ payload 字段：
 | `status` | string | 否 | 处理状态，默认 `processed` |
 | `ocr_text` | string/null | 否 | OCR 文本 |
 | `caption` | string/null | 否 | VLM 图片描述 |
+
+### 6.2.1 图片上传与读取
+
+如果前端需要显示真实图片，硬件/相机模块可以先上传原始图片 bytes：
+
+```text
+PUT /sessions/{session_id}/images/{image_id}
+Content-Type: image/jpeg | image/png | image/webp
+```
+
+请求体是图片二进制内容，不使用 multipart。响应：
+
+```json
+{
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "image_id": "img_001",
+  "image_path": "local://sessions/lec_20260605_010203_ab12cd34/images/img_001.jpg"
+}
+```
+
+随后 `image.capture.payload.image_path` 应使用这个 `image_path`。前端或调试工具
+可以读取：
+
+```text
+GET /sessions/{session_id}/images/{image_id}
+```
+
+后端只服务 `data/sessions/{session_id}/images/` 下的文件，不会直接暴露任意
+本机绝对路径。
 
 ### 6.3 knowledge.extraction
 

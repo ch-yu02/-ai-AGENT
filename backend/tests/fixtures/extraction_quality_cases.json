@@ -1,0 +1,39 @@
+[
+  {
+    "name": "signal_processing_fourier",
+    "session_id": "lec_fixture_fourier",
+    "transcript": [
+      {
+        "segment_id": "seg_fourier_001",
+        "start_ts": 1.0,
+        "end_ts": 4.0,
+        "text": "傅里叶变换可以把时域信号转换到频域。"
+      }
+    ],
+    "visuals": [
+      {
+        "image_id": "img_fourier_formula",
+        "capture_ts": 5.0,
+        "ocr_text": "X(f)=∫x(t)e^{-j2πft}dt",
+        "caption": "课件展示傅里叶变换公式。"
+      }
+    ],
+    "expected_entities": ["傅里叶变换", "频域"],
+    "expected_relations": ["maps_to"]
+  },
+  {
+    "name": "programming_function_call",
+    "session_id": "lec_fixture_programming",
+    "transcript": [
+      {
+        "segment_id": "seg_programming_001",
+        "start_ts": 2.0,
+        "end_ts": 6.0,
+        "text": "高阶函数可以接收函数作为参数，也可以返回新的函数。"
+      }
+    ],
+    "visuals": [],
+    "expected_entities": ["高阶函数", "函数"],
+    "expected_relations": ["related_to"]
+  }
+]

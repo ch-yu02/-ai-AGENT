@@ -142,6 +142,74 @@ class LocalStorage:
         """
         return self._safe_session_dir(session_id) / "llama_index"
 
+    def session_image_path(self, session_id: str, image_id: str, image_path: str | None = None) -> Path:
+        """Resolve a classroom image path inside the saved session directory.
+
+        For security, this method does not serve arbitrary absolute paths from
+        incoming ``image.capture`` events. It only resolves files under:
+
+        ``data/sessions/{session_id}/images/``
+
+        ``image_path`` may be a future ``local://sessions/{session_id}/images/x.jpg``
+        URI. If it is missing or points elsewhere, the stable ``image_id`` is
+        used as the filename stem and common image extensions are checked.
+        """
+        images_dir = self._safe_session_dir(session_id) / "images"
+        candidates: list[Path] = []
+
+        if image_path and image_path.startswith("local://"):
+            local_prefix = f"local://sessions/{session_id}/images/"
+            if image_path.startswith(local_prefix):
+                candidates.append(images_dir / image_path[len(local_prefix):])
+
+        raw = images_dir / image_id
+        candidates.extend(
+            [
+                raw,
+                raw.with_suffix(".jpg"),
+                raw.with_suffix(".jpeg"),
+                raw.with_suffix(".png"),
+                raw.with_suffix(".webp"),
+            ]
+        )
+
+        safe_root = images_dir.resolve()
+        for candidate in candidates:
+            resolved = candidate.resolve()
+            if not resolved.is_relative_to(safe_root):
+                continue
+            if resolved.exists() and resolved.is_file():
+                return resolved
+        raise FileNotFoundError(f"Image not found: {session_id}/{image_id}")
+
+    def save_session_image(
+        self,
+        session_id: str,
+        image_id: str,
+        content: bytes,
+        content_type: str | None,
+    ) -> Path:
+        """Save raw image bytes under the session images directory.
+
+        The API uses raw request bodies instead of multipart uploads so the
+        project does not need an extra ``python-multipart`` dependency. File
+        extensions are derived from the content type and the final path is
+        constrained to ``data/sessions/{session_id}/images``.
+        """
+        if not content:
+            raise ValueError("image content is empty")
+
+        images_dir = self._safe_session_dir(session_id) / "images"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        extension = self._image_extension(content_type)
+        path = (images_dir / f"{image_id}{extension}").resolve()
+        safe_root = images_dir.resolve()
+        if not path.is_relative_to(safe_root):
+            raise ValueError("image path escapes session images directory")
+
+        path.write_bytes(content)
+        return path
+
     def global_index_dir(self) -> Path:
         """返回跨课堂全局索引目录。
 
@@ -458,6 +526,17 @@ class LocalStorage:
             return content if content.endswith("\n") else content + "\n"
 
         return json.dumps(content, ensure_ascii=False, indent=2) + "\n"
+
+    def _image_extension(self, content_type: str | None) -> str:
+        """Map accepted image content types to stable file extensions."""
+        normalized = (content_type or "").split(";", 1)[0].strip().lower()
+        if normalized == "image/png":
+            return ".png"
+        if normalized == "image/webp":
+            return ".webp"
+        if normalized in {"image/jpeg", "image/jpg", ""}:
+            return ".jpg"
+        raise ValueError(f"Unsupported image content type: {content_type}")
 
     def _read_post_class_artifacts(self, session_dir: Path) -> SessionPostClassArtifacts:
         """读取一节历史课堂的可选课后产物。

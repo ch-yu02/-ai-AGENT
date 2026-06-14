@@ -61,6 +61,13 @@ export type TimelineItem = {
   created_at?: string;
 };
 
+export type SourceRef = {
+  type: string;
+  id: string;
+  ts?: number | null;
+  text?: string | null;
+};
+
 // 知识图谱节点。字段来自 GraphPatch operation 中的 node。
 export type KnowledgeNode = {
   node_id: string;
@@ -69,6 +76,7 @@ export type KnowledgeNode = {
   summary?: string | null;
   level?: number | null;
   importance?: number | null;
+  source_refs?: SourceRef[];
 };
 
 // 知识图谱关系。字段来自 GraphPatch operation 中的 edge。
@@ -77,6 +85,7 @@ export type KnowledgeEdge = {
   source: string;
   target: string;
   relation: string;
+  source_refs?: SourceRef[];
 };
 
 // 前端渲染用的图谱缓存。

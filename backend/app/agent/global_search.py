@@ -109,52 +109,26 @@ class GlobalSearchService:
                 warnings=["请先结束并保存至少一节课堂。"],
             )
 
+        warnings: list[str] = []
+        global_index_documents, global_rag_documents, document_owners = (
+            self._build_global_documents(summaries, warnings)
+        )
+
         keywords = self._keywords(query)
         scored: list[_ScoredDocument] = []
-        warnings: list[str] = []
-        global_index_documents: list[dict] = []
-        global_rag_documents: list[RagDocument] = []
-
-        for summary in summaries:
-            session_id = summary.session.session_id
-            try:
-                detail = self.storage.read_session(session_id)
-            except (FileNotFoundError, ValueError) as exc:
-                warnings.append(f"跳过损坏的历史课堂 {session_id}：{exc}")
+        for document, owner in zip(global_rag_documents, document_owners, strict=False):
+            score = self._score(document.text, keywords)
+            if score <= 0:
                 continue
-
-            context = self._context_from_history(session_id, detail.timeline)
-            documents = [
-                self._enrich_global_document(
-                    session_id=session_id,
-                    title=detail.session.title,
-                    course=detail.session.course,
+            scored.append(
+                _ScoredDocument(
+                    score=score,
+                    session_id=owner["session_id"],
+                    title=owner["title"],
+                    course=owner["course"],
                     document=document,
                 )
-                for document in build_session_documents(context, detail.knowledge_graph)
-            ]
-            for document in documents:
-                global_rag_documents.append(document)
-                global_index_documents.append(
-                    self._global_index_record(
-                        session_id=session_id,
-                        title=detail.session.title,
-                        course=detail.session.course,
-                        document=document,
-                    )
-                )
-                score = self._score(document.text, keywords)
-                if score <= 0:
-                    continue
-                scored.append(
-                    _ScoredDocument(
-                        score=score,
-                        session_id=session_id,
-                        title=detail.session.title,
-                        course=detail.session.course,
-                        document=document,
-                    )
-                )
+            )
 
         self.storage.save_global_search_index(global_index_documents)
 
@@ -189,6 +163,104 @@ class GlobalSearchService:
             hits=hits,
             warnings=warnings,
         )
+
+    def rebuild_global_index(self, *, build_llamaindex: bool = False) -> dict[str, object]:
+        """Rebuild the auditable global index snapshot and optional vector index.
+
+        This method backs the CLI command. It always writes
+        ``data/indexes/global/documents.json`` so lexical/global search has a
+        fresh source-of-truth snapshot. When ``build_llamaindex`` is true, it
+        also forces a persisted LlamaIndex rebuild and returns the manifest.
+        Broken history sessions are skipped and reported as warnings, matching
+        the search path's tolerance.
+        """
+        warnings: list[str] = []
+        summaries = self.storage.list_sessions()
+        records, documents, _ = self._build_global_documents(summaries, warnings)
+        documents_path = self.storage.save_global_search_index(records)
+        result: dict[str, object] = {
+            "document_count": len(records),
+            "documents_path": str(documents_path),
+            "warnings": warnings,
+            "llamaindex": {
+                "enabled": build_llamaindex,
+                "status": "skipped",
+            },
+        }
+
+        if build_llamaindex:
+            service = self._global_index_service or GlobalLlamaIndexService(
+                index_root=self.storage.global_index_dir(),
+            )
+            try:
+                manifest = service.rebuild(records=records, documents=documents)
+            except Exception as exc:  # noqa: BLE001 - CLI reports optional failure.
+                result["llamaindex"] = {
+                    "enabled": True,
+                    "status": "failed",
+                    "warning": str(exc),
+                }
+            else:
+                result["llamaindex"] = {
+                    "enabled": True,
+                    "status": "persisted",
+                    "manifest": manifest,
+                }
+
+        return result
+
+    def _build_global_documents(
+        self,
+        summaries,
+        warnings: list[str],
+    ) -> tuple[list[dict], list[RagDocument], list[dict]]:
+        """Read saved sessions and produce global-search documents.
+
+        The returned ``records`` are written to ``documents.json`` for auditing.
+        The returned ``RagDocument`` objects are used by lexical scoring and
+        optional LlamaIndex. ``owners`` mirrors the RAG document list so search
+        can recover session title/course without reparsing metadata.
+        """
+        records: list[dict] = []
+        documents: list[RagDocument] = []
+        owners: list[dict] = []
+
+        for summary in summaries:
+            session_id = summary.session.session_id
+            try:
+                detail = self.storage.read_session(session_id)
+            except (FileNotFoundError, ValueError) as exc:
+                warnings.append(f"跳过损坏的历史课堂 {session_id}：{exc}")
+                continue
+
+            context = self._context_from_history(session_id, detail.timeline)
+            session_documents = [
+                self._enrich_global_document(
+                    session_id=session_id,
+                    title=detail.session.title,
+                    course=detail.session.course,
+                    document=document,
+                )
+                for document in build_session_documents(context, detail.knowledge_graph)
+            ]
+            for document in session_documents:
+                documents.append(document)
+                owners.append(
+                    {
+                        "session_id": session_id,
+                        "title": detail.session.title,
+                        "course": detail.session.course,
+                    }
+                )
+                records.append(
+                    self._global_index_record(
+                        session_id=session_id,
+                        title=detail.session.title,
+                        course=detail.session.course,
+                        document=document,
+                    )
+                )
+        return records, documents, owners
 
     def _search_global_index(
         self,

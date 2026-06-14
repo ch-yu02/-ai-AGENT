@@ -36,6 +36,8 @@ Commands:
   install-backend  Install backend Python dependencies
   mock             Send mock events to an existing frontend-created session
   llm-smoke        Manually test configured LLM provider with fixed classroom data
+  rebuild-global-index
+                   Rebuild data/indexes/global documents snapshot
 
 Environment:
   BACKEND_HOST     Backend host, default 127.0.0.1
@@ -123,6 +125,7 @@ run_compile() {
     backend/app/main.py \
     backend/app/api/*.py \
     backend/app/core/*.py \
+    backend/app/extraction/*.py \
     backend/app/llm/*.py \
     backend/app/models/*.py \
     backend/app/rag/*.py \
@@ -167,6 +170,12 @@ run_llm_smoke() {
   "$PYTHON_BIN" -m backend.scripts.llm_smoke
 }
 
+run_rebuild_global_index() {
+  require_backend_venv
+  cd "$ROOT_DIR"
+  "$PYTHON_BIN" -m backend.scripts.rebuild_global_index "${@:2}"
+}
+
 command="${1:-help}"
 
 case "$command" in
@@ -203,6 +212,9 @@ case "$command" in
     ;;
   llm-smoke)
     run_llm_smoke
+    ;;
+  rebuild-global-index)
+    run_rebuild_global_index "$@"
     ;;
   help|-h|--help)
     usage
