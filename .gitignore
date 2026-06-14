@@ -5,6 +5,8 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+.data/*
+
 .env
 .env.*
 !.env.example
@@ -12,6 +14,7 @@ __pycache__/
 
 data/sessions/*
 !data/sessions/.gitkeep
+data/whisperlive_markdown/
 
 docs/选题.md
 docs/初选项目设计方案书.odt

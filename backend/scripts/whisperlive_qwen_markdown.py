@@ -1,0 +1,1003 @@
+"""Transcribe audio with WhisperLive, polish with local Qwen, and write Markdown.
+
+This script is intentionally offline after model downloads:
+
+1. Connect to a local WhisperLive OpenVINO server.
+2. Stream a local audio file as 16 kHz mono float32 frames.
+3. Collect completed WhisperLive transcript segments.
+4. Ask local OpenVINO Qwen on CPU to periodically turn accumulated subtitles
+   into classroom notes.
+5. Keep updating one Markdown file under ``data/whisperlive_markdown`` by default.
+
+No cloud LLM or EDU-Mate ``/events`` calls are made in this smoke path.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import queue
+import re
+import subprocess
+import sys
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from difflib import SequenceMatcher
+from pathlib import Path
+from typing import Any, Callable, Iterable
+
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from backend.scripts.local_audio_stream_sender import (
+    DEFAULT_OPENVINO_ROOT,
+    DEFAULT_QWEN_MODEL,
+    MEDIA_EXTENSIONS,
+    SAMPLE_RATE,
+    parse_json_object,
+    result_text,
+    sequence_coverage,
+    transcript_compare_key,
+)
+
+
+DEFAULT_WHISPERLIVE_HOST = "127.0.0.1"
+DEFAULT_WHISPERLIVE_PORT = 9090
+DEFAULT_WHISPERLIVE_MODEL = os.getenv(
+    "WHISPERLIVE_MODEL",
+    "OpenVINO/whisper-large-v3-turbo-fp16-ov",
+)
+DEFAULT_INPUT = DEFAULT_OPENVINO_ROOT / "test_video"
+DEFAULT_OUTPUT_DIR = Path("data/whisperlive_markdown")
+
+
+@dataclass(frozen=True)
+class WhisperLiveSegment:
+    """One transcript segment received from WhisperLive."""
+
+    start: float
+    end: float
+    text: str
+    completed: bool
+
+
+@dataclass(frozen=True)
+class MarkdownResult:
+    """Normalized Qwen markdown payload."""
+
+    title: str
+    summary: list[str]
+    sections: list[tuple[str, list[str]]]
+    keywords: list[str]
+    clean_transcript: list[str]
+
+
+def log(message: str) -> None:
+    """Print one timestamped log line."""
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def find_media(path: Path) -> Path:
+    """Resolve a media file from a direct file path or directory."""
+    expanded = path.expanduser()
+    if expanded.is_file():
+        return expanded
+    if not expanded.exists():
+        raise FileNotFoundError(f"Input path does not exist: {expanded}")
+    candidates = sorted(
+        item
+        for item in expanded.rglob("*")
+        if item.is_file() and item.suffix.lower() in MEDIA_EXTENSIONS
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No media file found under: {expanded}")
+    return candidates[0]
+
+
+def iter_audio_packets(
+    input_path: Path,
+    *,
+    packet_seconds: float,
+    max_audio_seconds: float,
+    sample_rate: int = SAMPLE_RATE,
+) -> Iterable[bytes]:
+    """Decode media with ffmpeg and yield float32 mono audio packets."""
+    if packet_seconds <= 0:
+        raise ValueError("packet_seconds must be positive")
+
+    import numpy as np  # noqa: PLC0415
+
+    packet_samples = max(1, int(packet_seconds * sample_rate))
+    packet_bytes = packet_samples * 4
+    max_samples = (
+        int(max_audio_seconds * sample_rate)
+        if max_audio_seconds and max_audio_seconds > 0
+        else None
+    )
+    cmd = [
+        "ffmpeg",
+        "-v",
+        "error",
+        "-i",
+        str(input_path),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(sample_rate),
+        "-f",
+        "f32le",
+        "pipe:1",
+    ]
+    process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert process.stdout is not None
+    emitted_samples = 0
+    stopped_early = False
+    try:
+        while True:
+            if max_samples is not None:
+                remaining_samples = max_samples - emitted_samples
+                if remaining_samples <= 0:
+                    stopped_early = True
+                    break
+                read_bytes = min(packet_bytes, remaining_samples * 4)
+            else:
+                read_bytes = packet_bytes
+
+            raw = process.stdout.read(read_bytes)
+            if not raw:
+                break
+            audio = np.frombuffer(raw, dtype=np.float32).copy()
+            if audio.size == 0:
+                break
+            np.nan_to_num(audio, copy=False)
+            np.clip(audio, -1.0, 1.0, out=audio)
+            emitted_samples += int(audio.size)
+            yield audio.tobytes()
+    finally:
+        if stopped_early and process.poll() is None:
+            process.terminate()
+        if process.stdout:
+            process.stdout.close()
+        stderr = process.stderr.read().decode("utf-8", errors="replace") if process.stderr else ""
+        return_code = process.wait()
+
+    if return_code != 0 and not stopped_early:
+        raise RuntimeError(f"ffmpeg failed for {input_path}: {stderr.strip()}")
+
+
+class WhisperLiveFileClient:
+    """Minimal file client for WhisperLive's websocket protocol."""
+
+    def __init__(
+        self,
+        *,
+        host: str,
+        port: int,
+        model: str,
+        language: str,
+        use_vad: bool,
+        send_last_n_segments: int,
+        no_speech_thresh: float,
+        same_output_threshold: int,
+        connect_timeout: float,
+    ) -> None:
+        try:
+            import websocket  # noqa: PLC0415
+        except ImportError as exc:
+            raise RuntimeError(
+                "websocket-client is missing. Run: scripts/dev.sh install-whisperlive"
+            ) from exc
+
+        self.websocket_module = websocket
+        self.url = f"ws://{host}:{port}"
+        self.uid = str(uuid.uuid4())
+        self.model = model
+        self.language = language
+        self.use_vad = use_vad
+        self.send_last_n_segments = send_last_n_segments
+        self.no_speech_thresh = no_speech_thresh
+        self.same_output_threshold = same_output_threshold
+        self.connect_timeout = connect_timeout
+        self.messages: queue.Queue[dict[str, Any]] = queue.Queue()
+        self.segments: list[WhisperLiveSegment] = []
+        self._segments_lock = threading.Lock()
+        self._seen_completed: set[tuple[str, str, str]] = set()
+        self._receiver_error: Exception | None = None
+        self._receiver_stop = threading.Event()
+
+    def transcribe_file(
+        self,
+        input_path: Path,
+        *,
+        packet_seconds: float,
+        max_audio_seconds: float,
+        send_realtime: bool,
+        tail_wait: float,
+    ) -> list[WhisperLiveSegment]:
+        """Stream one local file and return collected transcript segments."""
+        ws = self.websocket_module.create_connection(self.url, timeout=self.connect_timeout)
+        receiver = threading.Thread(target=self._receive_loop, args=(ws,), daemon=True)
+        receiver.start()
+        try:
+            self._send_options(ws)
+            self._wait_for_ready()
+            sent_packets = 0
+            start = time.time()
+            for packet in iter_audio_packets(
+                input_path,
+                packet_seconds=packet_seconds,
+                max_audio_seconds=max_audio_seconds,
+            ):
+                ws.send_binary(packet)
+                sent_packets += 1
+                if send_realtime:
+                    time.sleep(packet_seconds)
+            log(f"Sent {sent_packets} audio packet(s) in {time.time() - start:.2f}s")
+            self._wait_for_tail(tail_wait)
+            ws.send_binary(b"END_OF_AUDIO")
+            time.sleep(0.5)
+            return self._final_segments()
+        finally:
+            self._receiver_stop.set()
+            try:
+                ws.close()
+            except Exception:
+                pass
+            receiver.join(timeout=2.0)
+
+    def _send_options(self, ws: Any) -> None:
+        ws.send(
+            json.dumps(
+                {
+                    "uid": self.uid,
+                    "language": self.language,
+                    "task": "transcribe",
+                    "model": self.model,
+                    "use_vad": self.use_vad,
+                    "send_last_n_segments": self.send_last_n_segments,
+                    "no_speech_thresh": self.no_speech_thresh,
+                    "clip_audio": False,
+                    "same_output_threshold": self.same_output_threshold,
+                    "enable_translation": False,
+                    "target_language": "zh",
+                    "hotwords": None,
+                    "enable_diarization": False,
+                    "max_speakers": 1,
+                    "word_timestamps": False,
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    def _receive_loop(self, ws: Any) -> None:
+        while not self._receiver_stop.is_set():
+            try:
+                raw = ws.recv()
+            except Exception as exc:  # noqa: BLE001
+                self._receiver_error = exc
+                return
+            if not raw:
+                continue
+            try:
+                message = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if message.get("uid") != self.uid:
+                continue
+            self.messages.put(message)
+            for segment in parse_whisperlive_segments(message):
+                self._remember_segment(segment)
+
+    def _remember_segment(self, segment: WhisperLiveSegment) -> None:
+        with self._segments_lock:
+            if segment.completed:
+                key = (f"{segment.start:.3f}", f"{segment.end:.3f}", segment.text)
+                if key in self._seen_completed:
+                    return
+                self._seen_completed.add(key)
+                self.segments.append(segment)
+                log(
+                    f"WhisperLive completed "
+                    f"{segment.start:.2f}-{segment.end:.2f}: {segment.text}"
+                )
+                return
+
+            if not self.segments or self.segments[-1].completed:
+                self.segments.append(segment)
+            else:
+                self.segments[-1] = segment
+
+    def _wait_for_ready(self) -> None:
+        deadline = time.time() + self.connect_timeout
+        while time.time() < deadline:
+            try:
+                message = self.messages.get(timeout=0.2)
+            except queue.Empty:
+                if self._receiver_error:
+                    raise RuntimeError(f"WhisperLive receiver failed: {self._receiver_error}")
+                continue
+            if message.get("status") == "ERROR":
+                raise RuntimeError(f"WhisperLive error: {message.get('message')}")
+            if message.get("message") == "SERVER_READY":
+                log(f"WhisperLive ready with backend {message.get('backend')}")
+                return
+        raise TimeoutError("Timed out waiting for WhisperLive SERVER_READY")
+
+    def _wait_for_tail(self, tail_wait: float) -> None:
+        deadline = time.time() + max(0.0, tail_wait)
+        while time.time() < deadline:
+            time.sleep(0.1)
+            if self._receiver_error:
+                break
+
+    def _final_segments(self) -> list[WhisperLiveSegment]:
+        return self.snapshot_segments(completed_only=False)
+
+    def snapshot_segments(self, *, completed_only: bool = True) -> list[WhisperLiveSegment]:
+        """Return a stable copy of collected transcript segments."""
+        with self._segments_lock:
+            return normalize_collected_segments(
+                self.segments,
+                completed_only=completed_only,
+            )
+
+
+def parse_whisperlive_segments(message: dict[str, Any]) -> list[WhisperLiveSegment]:
+    """Extract normalized segments from one WhisperLive websocket message."""
+    raw_segments = message.get("segments")
+    if not isinstance(raw_segments, list):
+        return []
+    segments: list[WhisperLiveSegment] = []
+    for item in raw_segments:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        if not text:
+            continue
+        try:
+            start = float(item.get("start", 0.0))
+            end = float(item.get("end", start))
+        except (TypeError, ValueError):
+            start = 0.0
+            end = 0.0
+        segments.append(
+            WhisperLiveSegment(
+                start=start,
+                end=end,
+                text=text,
+                completed=bool(item.get("completed", False)),
+            )
+        )
+    return segments
+
+
+def overlap_seconds(left: WhisperLiveSegment, right: WhisperLiveSegment) -> float:
+    """Return timestamp overlap between two transcript segments."""
+    return max(0.0, min(left.end, right.end) - max(left.start, right.start))
+
+
+def is_subsumed_partial(
+    segment: WhisperLiveSegment,
+    completed_segments: list[WhisperLiveSegment],
+    *,
+    threshold: float = 0.65,
+) -> bool:
+    """Return true when a partial segment is mostly covered by completed output."""
+    if segment.completed:
+        return False
+    duration = max(0.01, segment.end - segment.start)
+    return any(
+        overlap_seconds(segment, completed) / duration >= threshold
+        for completed in completed_segments
+    )
+
+
+def normalize_collected_segments(
+    segments: list[WhisperLiveSegment],
+    *,
+    completed_only: bool,
+) -> list[WhisperLiveSegment]:
+    """Deduplicate and normalize collected WhisperLive segments."""
+    clean: list[WhisperLiveSegment] = []
+    completed_segments = [segment for segment in segments if segment.completed]
+    seen_text_ranges: set[tuple[float, float, str]] = set()
+    for segment in segments:
+        if completed_only and not segment.completed:
+            continue
+        text = segment.text.strip()
+        if not text:
+            continue
+        if is_subsumed_partial(segment, completed_segments):
+            continue
+        key = (round(segment.start, 2), round(segment.end, 2), text)
+        if key in seen_text_ranges:
+            continue
+        seen_text_ranges.add(key)
+        clean.append(
+            WhisperLiveSegment(
+                start=segment.start,
+                end=segment.end,
+                text=text,
+                completed=segment.completed,
+            )
+        )
+    return sorted(clean, key=lambda item: (item.start, item.end, item.completed))
+
+
+class QwenMarkdownPolisher:
+    """Local OpenVINO Qwen markdown generator."""
+
+    def __init__(self, *, model_path: Path, device: str) -> None:
+        import openvino_genai as ov_genai  # noqa: PLC0415
+
+        log(f"Loading Qwen markdown model: {model_path} on {device}")
+        self.pipe = ov_genai.LLMPipeline(str(model_path), device)
+
+    def generate(
+        self,
+        segments: list[WhisperLiveSegment],
+        *,
+        max_new_tokens: int,
+        domain_terms: list[str],
+    ) -> MarkdownResult:
+        """Generate structured Markdown data from transcript segments."""
+        prompt = build_markdown_prompt(segments, domain_terms=domain_terms)
+        raw = result_text(
+            self.pipe.generate(prompt, max_new_tokens=max_new_tokens, do_sample=False)
+        )
+        try:
+            payload = parse_json_object(raw)
+        except ValueError:
+            raw = result_text(
+                self.pipe.generate(
+                    build_markdown_repair_prompt(raw),
+                    max_new_tokens=max_new_tokens,
+                    do_sample=False,
+                )
+            )
+            try:
+                payload = parse_json_object(raw)
+            except ValueError as exc:
+                log(f"Qwen markdown JSON parse failed after repair: {exc}; using fallback")
+                return fallback_markdown_result(segments)
+        result = normalize_markdown_result(payload, segments)
+        return enforce_markdown_grounding(
+            result,
+            segments=segments,
+            domain_terms=domain_terms,
+        )
+
+
+def build_markdown_prompt(
+    segments: list[WhisperLiveSegment],
+    *,
+    domain_terms: list[str],
+) -> str:
+    """Build a strict JSON prompt for Qwen markdown cleanup."""
+    transcript = "\n".join(
+        f"- [{segment.start:.2f}-{segment.end:.2f}] {segment.text}"
+        for segment in segments
+    )
+    terms = "、".join(domain_terms)
+    return (
+        "你是一个课堂语音转录助手兼课堂笔记整理助手。"
+        "系统会每隔一段时间把当前累计的 WhisperLive 字幕发给你，"
+        "请把它整理成会持续更新的课堂笔记，用于记录课堂内容、重点、概念和老师强调的备考信息。"
+        "请只根据给定字幕做保守整理：补充标点、修正明显错别字、合并重复片段，"
+        "并生成结构化 Markdown 所需 JSON。\n"
+        "严格限制：不得扩写，不得添加字幕中没有的信息，不得编造例子；"
+        "即使你知道相关背景知识，也不能把字幕没有说出的内容写进笔记。"
+        "如果内容不足，就保持简短。\n"
+        "整理目标：像认真听课的学生记笔记一样，优先保留课堂主线、知识点、定义、"
+        "因果关系、老师强调的重点和可复习的条目；不要写成宣传文案或总结报告。\n"
+        "可选课程关键词如下；如果未提供关键词，就只能依据字幕上下文做通用纠错："
+        f"{terms or '未提供'}。\n"
+        "Few-shot 校准规则：\n"
+        "- 当课程关键词与 Whisper 字幕存在明显同音、近音、漏字或错字关系，"
+        "并且上下文支持时，可把字幕修正为课程关键词。例如关键词“线性代数”，"
+        "字幕“线形代数”可修正为“线性代数”。\n"
+        "- 当关键词“薛定谔方程”与字幕“学定额方程”在发音和上下文上明显对应，"
+        "可修正为“薛定谔方程”。\n"
+        "- 当没有关键词支持，或候选修正会改变原意时，保持原字幕含义，不要猜测。\n"
+        "这些保守修正规则必须同时应用到 title、summary、sections、keywords、clean_transcript。\n"
+        "每个 summary 条目、section bullet、clean_transcript 句子都必须能在原始字幕中找到直接依据。\n"
+        "只输出一个 JSON object，不要 Markdown，不要解释。\n"
+        "JSON schema:\n"
+        "{\n"
+        '  "title": "简短标题",\n'
+        '  "summary": ["要点1", "要点2"],\n'
+        '  "sections": [{"heading": "小节标题", "bullets": ["条目"]}],\n'
+        '  "keywords": ["关键词"],\n'
+        '  "clean_transcript": ["润色后的逐句字幕"]\n'
+        "}\n\n"
+        "WhisperLive 字幕:\n"
+        f"{transcript}\n\n"
+        "JSON:"
+    )
+
+
+def build_markdown_repair_prompt(raw_text: str) -> str:
+    """Ask Qwen to repair malformed markdown JSON."""
+    return (
+        "下面文本本应是课堂笔记 JSON，但格式不合法。"
+        "请只输出合法 JSON object，不要解释，不要 Markdown。"
+        "必须包含 title、summary、sections、keywords、clean_transcript 字段。\n\n"
+        f"原始文本:\n{raw_text}\n\n"
+        "合法 JSON:"
+    )
+
+
+def normalize_markdown_result(
+    payload: dict[str, Any],
+    segments: list[WhisperLiveSegment],
+) -> MarkdownResult:
+    """Normalize Qwen JSON into MarkdownResult."""
+    fallback_title = "WhisperLive 本地课堂笔记"
+    title = clean_scalar(payload.get("title")) or fallback_title
+    summary = clean_list(payload.get("summary"))
+    keywords = clean_list(payload.get("keywords"))
+    clean_transcript = clean_list(payload.get("clean_transcript"))
+    if not clean_transcript:
+        clean_transcript = [segment.text for segment in segments if segment.text.strip()]
+
+    sections: list[tuple[str, list[str]]] = []
+    raw_sections = payload.get("sections")
+    if isinstance(raw_sections, list):
+        for item in raw_sections:
+            if not isinstance(item, dict):
+                continue
+            heading = clean_scalar(item.get("heading"))
+            bullets = clean_list(item.get("bullets"))
+            if heading and bullets:
+                sections.append((heading, bullets))
+
+    if not sections and summary:
+        sections.append(("课堂要点", summary))
+    return MarkdownResult(
+        title=title,
+        summary=summary,
+        sections=sections,
+        keywords=keywords,
+        clean_transcript=clean_transcript,
+    )
+
+
+def fallback_markdown_result(segments: list[WhisperLiveSegment]) -> MarkdownResult:
+    """Build a minimal MarkdownResult when Qwen returns malformed JSON."""
+    clean_transcript = [segment.text for segment in segments if segment.text.strip()]
+    return MarkdownResult(
+        title="WhisperLive 本地课堂笔记",
+        summary=[],
+        sections=[],
+        keywords=[],
+        clean_transcript=clean_transcript,
+    )
+
+
+def combined_transcript_key(segments: list[WhisperLiveSegment]) -> str:
+    """Return normalized transcript text used for grounding note items."""
+    return transcript_compare_key("".join(segment.text for segment in segments))
+
+
+def matched_character_count(candidate: str, source: str) -> int:
+    """Return aligned character count between candidate and source."""
+    matcher = SequenceMatcher(None, candidate, source, autojunk=False)
+    return sum(block.size for block in matcher.get_matching_blocks())
+
+
+def is_grounded_note_item(
+    text: str,
+    *,
+    transcript_key: str,
+    domain_terms: list[str],
+    min_coverage: float = 0.72,
+) -> bool:
+    """Return true when a note item is supported by the transcript."""
+    item_key = transcript_compare_key(text)
+    if not item_key or not transcript_key:
+        return False
+    if item_key in transcript_key:
+        return True
+    if len(item_key) <= 3:
+        return False
+
+    domain_keys = [transcript_compare_key(term) for term in domain_terms]
+    for term_key in domain_keys:
+        if term_key and term_key in item_key:
+            item_key = item_key.replace(term_key, "")
+    if not item_key:
+        return True
+
+    matched = matched_character_count(item_key, transcript_key)
+    unmatched = len(item_key) - matched
+    max_unmatched = max(3, int(len(item_key) * 0.15))
+    return (
+        sequence_coverage(item_key, transcript_key) >= min_coverage
+        and unmatched <= max_unmatched
+    )
+
+
+def filter_grounded_list(
+    values: list[str],
+    *,
+    transcript_key: str,
+    domain_terms: list[str],
+) -> list[str]:
+    """Keep only note items grounded in transcript text."""
+    return [
+        item
+        for item in values
+        if is_grounded_note_item(
+            item,
+            transcript_key=transcript_key,
+            domain_terms=domain_terms,
+        )
+    ]
+
+
+def enforce_markdown_grounding(
+    result: MarkdownResult,
+    *,
+    segments: list[WhisperLiveSegment],
+    domain_terms: list[str],
+) -> MarkdownResult:
+    """Drop Qwen note content that is not supported by the transcript."""
+    transcript_key = combined_transcript_key(segments)
+    raw_transcript = [segment.text for segment in segments if segment.text.strip()]
+
+    summary = filter_grounded_list(
+        result.summary,
+        transcript_key=transcript_key,
+        domain_terms=domain_terms,
+    )
+    keywords = filter_grounded_list(
+        result.keywords,
+        transcript_key=transcript_key,
+        domain_terms=domain_terms,
+    )
+    clean_transcript = filter_grounded_list(
+        result.clean_transcript,
+        transcript_key=transcript_key,
+        domain_terms=domain_terms,
+    ) or raw_transcript
+
+    sections: list[tuple[str, list[str]]] = []
+    for heading, bullets in result.sections:
+        grounded_bullets = filter_grounded_list(
+            bullets,
+            transcript_key=transcript_key,
+            domain_terms=domain_terms,
+        )
+        if grounded_bullets:
+            sections.append((heading, grounded_bullets))
+
+    if result.summary and not summary:
+        log("Dropped ungrounded Qwen summary items")
+    if result.sections and not sections:
+        log("Dropped ungrounded Qwen section bullets")
+    if result.clean_transcript and clean_transcript == raw_transcript:
+        log("Dropped ungrounded Qwen polished transcript items")
+
+    return MarkdownResult(
+        title=result.title,
+        summary=summary,
+        sections=sections,
+        keywords=keywords,
+        clean_transcript=clean_transcript,
+    )
+
+
+def render_markdown(
+    result: MarkdownResult,
+    *,
+    source_file: Path,
+    whisper_model: str,
+    segments: list[WhisperLiveSegment],
+    update_status: str = "final",
+) -> str:
+    """Render a Markdown document."""
+    lines = [
+        f"# {result.title}",
+        "",
+        f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- 更新状态：{update_status}",
+        f"- 音频文件：`{source_file}`",
+        f"- WhisperLive 模型：`{whisper_model}`",
+        f"- 字幕段数：{len(segments)}",
+        "",
+    ]
+    if result.summary:
+        lines.extend(["## 摘要", ""])
+        lines.extend(f"- {item}" for item in result.summary)
+        lines.append("")
+    if result.keywords:
+        lines.extend(["## 关键词", "", "、".join(result.keywords), ""])
+    for heading, bullets in result.sections:
+        lines.extend([f"## {heading}", ""])
+        lines.extend(f"- {item}" for item in bullets)
+        lines.append("")
+    lines.extend(["## 润色字幕", ""])
+    lines.extend(f"{index}. {text}" for index, text in enumerate(result.clean_transcript, start=1))
+    lines.extend(["", "## 原始 WhisperLive 字幕", ""])
+    for segment in segments:
+        status = "final" if segment.completed else "partial"
+        lines.append(f"- `{segment.start:.2f}-{segment.end:.2f}` ({status}) {segment.text}")
+    lines.append("")
+    return "\n".join(lines)
+
+
+def make_markdown_output_path(output_dir: Path, input_path: Path) -> Path:
+    """Build a stable output path for one streaming notes document."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", input_path.stem).strip("_")
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return output_dir / f"{timestamp}_{stem or 'audio'}_notes.md"
+
+
+def write_markdown(
+    markdown: str,
+    *,
+    output_dir: Path,
+    input_path: Path,
+    output_path: Path | None = None,
+) -> Path:
+    """Write markdown to disk and return the path."""
+    output_path = output_path or make_markdown_output_path(output_dir, input_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(markdown, encoding="utf-8")
+    return output_path
+
+
+class PeriodicMarkdownUpdater:
+    """Periodically regenerate one Markdown notes file from transcript snapshots."""
+
+    def __init__(
+        self,
+        *,
+        qwen_factory: Callable[[], QwenMarkdownPolisher],
+        snapshot_segments: Callable[[], list[WhisperLiveSegment]],
+        output_path: Path,
+        input_path: Path,
+        whisper_model: str,
+        domain_terms: list[str],
+        max_new_tokens: int,
+        update_every_seconds: float,
+        min_update_segments: int,
+    ) -> None:
+        self.qwen_factory = qwen_factory
+        self.snapshot_segments = snapshot_segments
+        self.output_path = output_path
+        self.input_path = input_path
+        self.whisper_model = whisper_model
+        self.domain_terms = domain_terms
+        self.max_new_tokens = max_new_tokens
+        self.update_every_seconds = update_every_seconds
+        self.min_update_segments = min_update_segments
+        self._qwen: QwenMarkdownPolisher | None = None
+        self._stop_event = threading.Event()
+        self._thread: threading.Thread | None = None
+        self._last_fingerprint: tuple[tuple[float, float, str], ...] = ()
+        self.update_count = 0
+
+    def start(self) -> None:
+        """Start background periodic updates when enabled."""
+        if self.update_every_seconds <= 0:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Stop the background updater without forcing a final write."""
+        self._stop_event.set()
+        if self._thread:
+            self._thread.join()
+
+    def stop_and_flush(self, final_segments: list[WhisperLiveSegment]) -> Path | None:
+        """Stop the background updater and write the final notes snapshot."""
+        self.stop()
+        if not final_segments:
+            return None
+        return self.write_update(final_segments, final=True)
+
+    def write_update(
+        self,
+        segments: list[WhisperLiveSegment],
+        *,
+        final: bool,
+    ) -> Path | None:
+        """Regenerate the notes file from the provided segment snapshot."""
+        if not final and len(segments) < self.min_update_segments:
+            return None
+        fingerprint = self._fingerprint(segments)
+        if not final and fingerprint == self._last_fingerprint:
+            return None
+        self._last_fingerprint = fingerprint
+
+        if self._qwen is None:
+            self._qwen = self.qwen_factory()
+        result = self._qwen.generate(
+            segments,
+            max_new_tokens=self.max_new_tokens,
+            domain_terms=self.domain_terms,
+        )
+        markdown = render_markdown(
+            result,
+            source_file=self.input_path,
+            whisper_model=self.whisper_model,
+            segments=segments,
+            update_status="final" if final else "streaming",
+        )
+        output_path = write_markdown(
+            markdown,
+            output_dir=self.output_path.parent,
+            input_path=self.input_path,
+            output_path=self.output_path,
+        )
+        self.update_count += 1
+        log(
+            f"Wrote {'final' if final else 'streaming'} Markdown update "
+            f"#{self.update_count} from {len(segments)} segment(s): {output_path}"
+        )
+        return output_path
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self.update_every_seconds):
+            try:
+                self.write_update(self.snapshot_segments(), final=False)
+            except Exception as exc:  # noqa: BLE001
+                log(f"Markdown periodic update failed: {exc}")
+
+    @staticmethod
+    def _fingerprint(
+        segments: list[WhisperLiveSegment],
+    ) -> tuple[tuple[float, float, str], ...]:
+        return tuple((round(item.start, 2), round(item.end, 2), item.text) for item in segments)
+
+
+def clean_scalar(value: object) -> str:
+    """Normalize a scalar text value."""
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def clean_list(value: object) -> list[str]:
+    """Normalize a JSON array into unique non-empty strings."""
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = clean_scalar(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        items.append(text)
+    return items
+
+
+def parse_domain_terms(raw_terms: str) -> list[str]:
+    """Parse comma/newline separated domain terms."""
+    if not raw_terms.strip():
+        return []
+    items = re.split(r"[,，;；\n]+", raw_terms)
+    return clean_list(items)
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        description="WhisperLive local ASR + Qwen CPU markdown smoke."
+    )
+    parser.add_argument("--server", default=DEFAULT_WHISPERLIVE_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_WHISPERLIVE_PORT)
+    parser.add_argument("--input", default=str(DEFAULT_INPUT), help="Audio file or directory.")
+    parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument("--whisperlive-model", default=DEFAULT_WHISPERLIVE_MODEL)
+    parser.add_argument("--language", default="<|zh|>")
+    parser.add_argument("--max-audio-seconds", type=float, default=120.0)
+    parser.add_argument("--packet-seconds", type=float, default=0.25)
+    parser.add_argument("--fast-send", action="store_true", help="Send audio faster than realtime.")
+    parser.add_argument("--tail-wait", type=float, default=8.0)
+    parser.add_argument("--connect-timeout", type=float, default=300.0)
+    parser.add_argument("--qwen-model", default=str(DEFAULT_QWEN_MODEL))
+    parser.add_argument("--qwen-device", default=os.getenv("QWEN_DEVICE", "CPU"))
+    parser.add_argument("--qwen-tokens", type=int, default=900)
+    parser.add_argument(
+        "--update-every-seconds",
+        type=float,
+        default=30.0,
+        help="Regenerate the same Markdown notes file every N seconds. Use 0 for final-only.",
+    )
+    parser.add_argument(
+        "--min-update-segments",
+        type=int,
+        default=2,
+        help="Minimum completed transcript segments required for a streaming Markdown update.",
+    )
+    parser.add_argument(
+        "--domain-terms",
+        default=os.getenv("DOMAIN_TERMS", ""),
+        help="Comma separated terms Qwen may use for conservative transcript correction.",
+    )
+    parser.add_argument("--no-vad", action="store_true")
+    parser.add_argument("--send-last-n-segments", type=int, default=12)
+    parser.add_argument("--no-speech-thresh", type=float, default=0.45)
+    parser.add_argument("--same-output-threshold", type=int, default=6)
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    """CLI entrypoint."""
+    args = parse_args(argv or sys.argv[1:])
+    input_path = find_media(Path(args.input))
+    log(f"Input media: {input_path}")
+    log(f"WhisperLive server: {args.server}:{args.port}")
+    log(f"WhisperLive model: {args.whisperlive_model}")
+    client = WhisperLiveFileClient(
+        host=args.server,
+        port=args.port,
+        model=args.whisperlive_model,
+        language=args.language,
+        use_vad=not args.no_vad,
+        send_last_n_segments=args.send_last_n_segments,
+        no_speech_thresh=args.no_speech_thresh,
+        same_output_threshold=args.same_output_threshold,
+        connect_timeout=args.connect_timeout,
+    )
+    output_path = make_markdown_output_path(Path(args.output_dir), input_path)
+    domain_terms = parse_domain_terms(args.domain_terms)
+    updater = PeriodicMarkdownUpdater(
+        qwen_factory=lambda: QwenMarkdownPolisher(
+            model_path=Path(args.qwen_model),
+            device=args.qwen_device,
+        ),
+        snapshot_segments=lambda: client.snapshot_segments(completed_only=True),
+        output_path=output_path,
+        input_path=input_path,
+        whisper_model=args.whisperlive_model,
+        domain_terms=domain_terms,
+        max_new_tokens=args.qwen_tokens,
+        update_every_seconds=args.update_every_seconds,
+        min_update_segments=max(1, args.min_update_segments),
+    )
+    log(f"Markdown output: {output_path}")
+    if args.update_every_seconds > 0:
+        log(f"Markdown updates every {args.update_every_seconds:.1f}s")
+
+    segments: list[WhisperLiveSegment] = []
+    updater.start()
+    try:
+        segments = client.transcribe_file(
+            input_path,
+            packet_seconds=args.packet_seconds,
+            max_audio_seconds=args.max_audio_seconds,
+            send_realtime=not args.fast_send,
+            tail_wait=args.tail_wait,
+        )
+    except Exception:
+        updater.stop()
+        raise
+    if not segments:
+        updater.stop()
+        raise RuntimeError("WhisperLive returned no transcript segments")
+
+    log(f"Collected {len(segments)} transcript segment(s)")
+    final_output_path = updater.stop_and_flush(segments)
+    if final_output_path:
+        log(f"Final Markdown ready: {final_output_path}")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("Interrupted.", file=sys.stderr)
+        raise SystemExit(130)

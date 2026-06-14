@@ -16,6 +16,8 @@ FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 PIP_BIN="$ROOT_DIR/.venv/bin/pip"
 UVICORN_BIN="$ROOT_DIR/.venv/bin/uvicorn"
+OPENVINO_ROOT="${OPENVINO_ROOT:-/home/edu-mate_user/openvino}"
+OPENVINO_PYTHON="${OPENVINO_PYTHON:-$OPENVINO_ROOT/venv/bin/python}"
 
 usage() {
   cat <<EOF
@@ -34,7 +36,13 @@ Commands:
   compile          Compile-check backend Python files
   build            Type-check and build frontend
   install-backend  Install backend Python dependencies
+  install-whisperlive
+                   Install lightweight WhisperLive deps into OpenVINO Python
   mock             Send mock events to an existing frontend-created session
+  audio-stream     Stream local test audio through OpenVINO Whisper/Qwen
+  whisperlive-server
+                   Start WhisperLive OpenVINO websocket server on iGPU
+  whisperlive-md   Stream local audio to WhisperLive and periodically update Qwen notes
   llm-smoke        Manually test configured LLM provider with fixed classroom data
   rebuild-global-index
                    Rebuild data/indexes/global documents snapshot
@@ -44,11 +52,19 @@ Environment:
   BACKEND_PORT     Backend port, default 8000
   FRONTEND_HOST    Frontend host, default 127.0.0.1
   FRONTEND_PORT    Frontend port, default 5173
+  OPENVINO_ROOT    OpenVINO model/workspace root, default /home/edu-mate_user/openvino
+  OPENVINO_PYTHON  Python with OpenVINO deps, default \$OPENVINO_ROOT/venv/bin/python
 
 Examples:
   scripts/dev.sh dev
   scripts/dev.sh test
   scripts/dev.sh mock --session-id lec_xxx --no-end
+  scripts/dev.sh audio-stream --session-id lec_xxx --max-audio-seconds 120 --whisper-device GPU --qwen-device CPU
+  scripts/dev.sh install-whisperlive
+  scripts/dev.sh whisperlive-server --port 9090
+  scripts/dev.sh whisperlive-md --max-audio-seconds 300 --update-every-seconds 30
+  scripts/dev.sh whisperlive-md --domain-terms "线性代数,矩阵,特征值" --max-audio-seconds 60 --update-every-seconds 20
+  scripts/dev.sh whisperlive-md --whisperlive-model OpenVINO/whisper-medium-fp16-ov --max-audio-seconds 60 --fast-send
   BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
 EOF
 }
@@ -64,6 +80,14 @@ require_backend_venv() {
 require_frontend_deps() {
   if [[ ! -d "$ROOT_DIR/frontend/node_modules" ]]; then
     echo "Frontend dependencies are missing. Run: cd frontend && npm install" >&2
+    exit 1
+  fi
+}
+
+require_openvino_python() {
+  if [[ ! -x "$OPENVINO_PYTHON" ]]; then
+    echo "OpenVINO Python is missing. Expected: $OPENVINO_PYTHON" >&2
+    echo "Set OPENVINO_ROOT or OPENVINO_PYTHON to the local OpenVINO environment." >&2
     exit 1
   fi
 }
@@ -152,6 +176,22 @@ run_install_backend() {
   "$PIP_BIN" install -r backend/requirements.txt
 }
 
+run_install_whisperlive() {
+  require_openvino_python
+  cd "$ROOT_DIR"
+  "$OPENVINO_PYTHON" -m pip install --no-deps "whisper-live==0.9.0"
+  "$OPENVINO_PYTHON" -m pip install --upgrade-strategy only-if-needed \
+    "fastapi" \
+    "uvicorn" \
+    "websockets" \
+    "websocket-client" \
+    "onnxruntime>=1.20,<2" \
+    "python-multipart"
+  echo
+  echo "WhisperLive lightweight OpenVINO setup installed in: $OPENVINO_PYTHON"
+  echo "Microphone/PyAudio dependencies are intentionally not installed for this file-stream smoke path."
+}
+
 run_mock() {
   require_backend_venv
   cd "$ROOT_DIR"
@@ -162,6 +202,30 @@ run_mock() {
     exit 1
   fi
   "$PYTHON_BIN" backend/scripts/mock_sender.py "${@:2}"
+}
+
+run_audio_stream() {
+  require_openvino_python
+  cd "$ROOT_DIR"
+  if [[ "$#" -eq 1 ]]; then
+    echo "audio-stream requires an existing frontend-created session_id." >&2
+    echo "Start a classroom in the frontend first, then run:" >&2
+    echo "  scripts/dev.sh audio-stream --session-id REPLACE_WITH_SESSION_ID --max-audio-seconds 120 --whisper-device GPU --qwen-device CPU" >&2
+    exit 1
+  fi
+  "$OPENVINO_PYTHON" backend/scripts/local_audio_stream_sender.py "${@:2}"
+}
+
+run_whisperlive_server() {
+  require_openvino_python
+  cd "$ROOT_DIR"
+  "$OPENVINO_PYTHON" backend/scripts/whisperlive_server.py "${@:2}"
+}
+
+run_whisperlive_md() {
+  require_openvino_python
+  cd "$ROOT_DIR"
+  "$OPENVINO_PYTHON" backend/scripts/whisperlive_qwen_markdown.py "${@:2}"
 }
 
 run_llm_smoke() {
@@ -207,8 +271,20 @@ case "$command" in
   install-backend)
     run_install_backend
     ;;
+  install-whisperlive)
+    run_install_whisperlive
+    ;;
   mock)
     run_mock "$@"
+    ;;
+  audio-stream)
+    run_audio_stream "$@"
+    ;;
+  whisperlive-server)
+    run_whisperlive_server "$@"
+    ;;
+  whisperlive-md)
+    run_whisperlive_md "$@"
     ;;
   llm-smoke)
     run_llm_smoke
