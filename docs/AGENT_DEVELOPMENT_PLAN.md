@@ -38,9 +38,9 @@
 
 - 外部 ASR/OCR 模块不负责知识抽取。
 - `knowledge.extraction` 是 EDU-Mate 内部事件。
-- 规则版内部知识抽取已在 session end 阶段接入。
-- 规则版内部知识抽取已在录制中批量触发。
-- LLM-backed 抽取已实现，可通过 `KNOWLEDGE_EXTRACTION_BACKEND=llm` 启用。
+- LLM-backed 内部知识抽取已在 session end 阶段接入。
+- LLM-backed 内部知识抽取已在录制中批量触发。
+- 自动知识抽取已切到 LLM-only；未配置或失败时返回错误，不回退规则版。
 
 ## 2. 当前数据流
 
@@ -54,8 +54,8 @@ OCR/VLM -> image.capture
 当前图谱输入：
 
 ```text
-recording-time rule extractor -> knowledge.extraction
-session end rule extractor -> knowledge.extraction
+recording-time LLM extractor -> knowledge.extraction
+session end LLM extractor -> knowledge.extraction
 mock sender/debug -> knowledge.extraction
 KnowledgeGraphManager -> GraphPatch
 ```
@@ -72,7 +72,7 @@ transcript.segment + image.capture
 
 ## 3. 下一阶段：内部知识抽取
 
-目标：在规则版和 LLM-backed 抽取基础上，补齐真实 provider 文档和质量调优。
+目标：在 LLM-backed 抽取基础上，补齐真实 provider 文档和质量调优。
 
 已新增：
 
@@ -86,7 +86,7 @@ backend/app/extraction/
   schemas.py
 ```
 
-第一版已使用规则抽取，不依赖 LLM：
+历史规则抽取已停用生产入口，仅保留为 debug/对比基线：
 
 - 从最近 N 条 transcript 中抽取候选术语。
 - 从 OCR/caption 中抽取公式和概念。
@@ -99,16 +99,16 @@ backend/app/extraction/
 - 输出结构必须校验为 `KnowledgeExtraction`。
 - 抽取不到有效实体时返回空结果，不制造低置信度节点。
 
-第二版已接 LLM：
+当前生产抽取路径：
 
 - 使用 `CloudLLMClient`。
 - 输出结构必须校验为 `KnowledgeExtraction`。
 - 失败时不回退规则抽取。
 - 失败时返回明确错误信息，说明 provider、错误类型和是否生成图谱。
 - schema 校验失败时不写入 `knowledge.extraction`，避免污染图谱。
-- 启用方式：`KNOWLEDGE_EXTRACTION_BACKEND=llm`。
+- 由统一后端 LLM provider 配置驱动。
 
-核心接口建议：
+核心接口：
 
 ```text
 KnowledgeExtractor.extract(context) -> ExtractionResult
@@ -122,10 +122,9 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 
 错误处理原则：
 
-- 规则版 extractor 失败：记录错误，返回空 `extractions`。
 - LLM-backed extractor 失败：记录错误，返回空 `extractions`。
 - 不把失败伪装成低质量 `knowledge.extraction`。
-- 不在 LLM 失败时自动调用规则版兜底；是否选择规则版或 LLM 版由配置决定。
+- 不在 LLM 失败时自动调用规则版兜底。
 - 抽取失败不能影响字幕、OCR、课堂结束和已有图谱保存。
 
 触发策略建议：
@@ -234,15 +233,15 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 
 内部知识抽取验收：
 
-- 已支持只发送 `transcript.segment` 和 `image.capture`，不发送 mock
-  `knowledge.extraction`，结束课堂后仍生成知识图谱。
+- 已支持配置 LLM 后只发送 `transcript.segment` 和 `image.capture`，不发送
+  mock `knowledge.extraction`，结束课堂后仍生成知识图谱。
 - 已生成稳定 label 的节点。
 - 已生成可解释 relation 的边。
 - 已尽量为节点/边附带 source refs。
 - 已保证抽取失败不影响课堂保存。
 - LLM 抽取失败时返回可读错误信息，不自动回退规则抽取。
 - schema 校验失败的抽取结果不会写入图谱。
-- 已支持录制中实时图谱增长。
+- 已支持配置 LLM 后录制中实时图谱增长。
 
 Agent/RAG 验收：
 

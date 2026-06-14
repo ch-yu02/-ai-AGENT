@@ -32,9 +32,9 @@
 
 - [x] 外部模块只需发送 `transcript.segment` 和 `image.capture`
 - [x] `knowledge.extraction` 是 EDU-Mate 内部管线事件或 mock/debug 数据
-- [x] 规则版内部知识抽取已接入 session end
-- [x] 规则版内部知识抽取已接入录制中批量触发
-- [x] LLM-backed 知识抽取已实现，可通过 `KNOWLEDGE_EXTRACTION_BACKEND=llm` 启用
+- [x] LLM-backed 内部知识抽取已接入 session end
+- [x] LLM-backed 内部知识抽取已接入录制中批量触发
+- [x] 自动知识抽取已切到 LLM-only，不再使用规则版兜底
 
 ## 1. P0：内部知识抽取模块
 
@@ -50,18 +50,17 @@
 - [x] 将抽取结果交给 `ContextManager` / `KnowledgeGraphManager`
 - [x] 确定触发策略：session end 批量触发，录制中每 3 条 final 字幕或带文字视觉事件触发
 - [x] 避免在 `POST /events` 热路径中阻塞太久
-- [x] 增加规则版 extractor，先不依赖云端 LLM
-- [x] 增加 LLM-backed extractor 可选实现
+- [x] 增加 LLM-backed extractor，并停用规则版生产入口
 - [x] 增加单元测试和 fixture
 - [x] 增加录制中每 N 条字幕或每 N 秒的批量触发
 
 验收：
 
-- [x] 只发送 ASR/OCR 输入，结束课堂后知识图谱也能增长
+- [x] 配置 LLM 后，只发送 ASR/OCR 输入，结束课堂后知识图谱也能增长
 - [x] mock sender 不再是图谱增长的唯一方式
 - [x] 抽取失败不会影响字幕/OCR 展示或课堂保存
 - [x] 来源引用能对应 transcript 或 visual
-- [x] 只发送 ASR/OCR 输入，录制中前端知识图谱也能实时增长
+- [x] 配置 LLM 后，只发送 ASR/OCR 输入，录制中前端知识图谱也能实时增长
 - [x] LLM 抽取失败会输出明确错误，不自动回退规则版
 - [x] LLM schema 校验失败不会写入图谱
 

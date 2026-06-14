@@ -7,6 +7,7 @@ from backend.app.core import (
     session_manager,
     websocket_manager,
 )
+from backend.app.extraction import LLMKnowledgeExtractor, KnowledgeExtractionService
 from backend.app.models import RealtimeEvent, StartSessionRequest
 
 
@@ -29,6 +30,29 @@ class FakeWebSocket:
         self.sent_payloads.append(data)
 
 
+class FakeJsonLLMClient:
+    """Fake extractor model used by the route test.
+
+    Realtime route tests care about WebSocket order and payload shape, not model
+    quality. The fake keeps the test free from real provider configuration.
+    """
+
+    def complete_json(self, system_prompt, user_prompt, *, temperature=0.1):  # type: ignore[no-untyped-def]
+        return {
+            "entities": [
+                {"name": "傅里叶变换", "type": "concept"},
+                {"name": "频域", "type": "concept"},
+            ],
+            "relations": [
+                {
+                    "source": "傅里叶变换",
+                    "target": "频域",
+                    "relation": "maps_to",
+                }
+            ],
+        }
+
+
 class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         session_manager.clear()
@@ -43,6 +67,10 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
         context_manager.start_session(self.session_id)
         knowledge_graph_manager.start_session(self.session_id)
         self.socket = FakeWebSocket()
+        self.original_extraction_service = events_api.knowledge_extraction_service
+        events_api.knowledge_extraction_service = KnowledgeExtractionService(
+            LLMKnowledgeExtractor(FakeJsonLLMClient())
+        )
 
     async def asyncSetUp(self) -> None:
         await websocket_manager.connect(self.session_id, self.socket)
@@ -52,6 +80,7 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
         context_manager.clear()
         knowledge_graph_manager.clear()
         websocket_manager.clear()
+        events_api.knowledge_extraction_service = self.original_extraction_service
 
     async def test_third_transcript_segment_broadcasts_internal_extraction(self) -> None:
         """The third final segment should trigger a separate graph update."""

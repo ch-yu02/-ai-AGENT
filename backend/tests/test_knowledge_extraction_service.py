@@ -1,14 +1,37 @@
 import unittest
-from unittest.mock import patch
 
 from backend.app.core import ContextManager, KnowledgeGraphManager
 from backend.app.extraction import (
     LLMKnowledgeExtractor,
     KnowledgeExtractionService,
-    RuleKnowledgeExtractor,
 )
 from backend.app.extraction.service import build_default_extractor
 from backend.app.models import RealtimeEvent
+
+
+class FakeJsonLLMClient:
+    """Offline fake that returns a stable extraction-shaped JSON payload."""
+
+    def complete_json(self, system_prompt, user_prompt, *, temperature=0.1):  # type: ignore[no-untyped-def]
+        return {
+            "entities": [
+                {
+                    "entity_id": "node_fourier_transform",
+                    "name": "傅里叶变换",
+                    "type": "concept",
+                    "description": "将信号转换到频域分析",
+                },
+                {"entity_id": "node_frequency_domain", "name": "频域", "type": "concept"},
+            ],
+            "relations": [
+                {
+                    "source": "傅里叶变换",
+                    "target": "频域",
+                    "relation": "maps_to",
+                }
+            ],
+            "importance": 0.9,
+        }
 
 
 class KnowledgeExtractionServiceTest(unittest.TestCase):
@@ -18,7 +41,9 @@ class KnowledgeExtractionServiceTest(unittest.TestCase):
         self.graph_manager = KnowledgeGraphManager()
         self.context = self.context_manager.start_session(self.session_id)
         self.graph_manager.start_session(self.session_id)
-        self.service = KnowledgeExtractionService(RuleKnowledgeExtractor())
+        self.service = KnowledgeExtractionService(
+            LLMKnowledgeExtractor(FakeJsonLLMClient())
+        )
 
     def test_extract_and_apply_routes_internal_events_to_context_and_graph(self) -> None:
         self.context_manager.handle_event(
@@ -130,12 +155,8 @@ class KnowledgeExtractionServiceTest(unittest.TestCase):
         )
         self.assertTrue(self.service.should_extract_realtime(self.context, event))
 
-    def test_default_extractor_uses_rule_backend_unless_llm_is_requested(self) -> None:
-        with patch.dict("os.environ", {"KNOWLEDGE_EXTRACTION_BACKEND": ""}, clear=True):
-            self.assertIsInstance(build_default_extractor(), RuleKnowledgeExtractor)
-
-        with patch.dict("os.environ", {"KNOWLEDGE_EXTRACTION_BACKEND": "llm"}, clear=True):
-            self.assertIsInstance(build_default_extractor(), LLMKnowledgeExtractor)
+    def test_default_extractor_uses_llm_backend(self) -> None:
+        self.assertIsInstance(build_default_extractor(), LLMKnowledgeExtractor)
 
 
 if __name__ == "__main__":

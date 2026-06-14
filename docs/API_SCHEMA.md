@@ -646,14 +646,7 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 }
 ```
 
-知识抽取后端选择：
-
-```text
-KNOWLEDGE_EXTRACTION_BACKEND=rule  # 默认，离线规则版
-KNOWLEDGE_EXTRACTION_BACKEND=llm   # 使用 OpenAI-compatible LLM provider
-```
-
-LLM-backed extraction 复用后端 LLM 环境变量：
+知识抽取使用 LLM-backed extractor，复用后端 LLM 环境变量：
 
 ```text
 LLM_PROVIDER

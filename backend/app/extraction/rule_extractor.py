@@ -1,8 +1,9 @@
-"""Rule-based internal knowledge extractor.
+"""Legacy rule-based internal knowledge extractor.
 
-The first implementation is intentionally offline and deterministic. It favors
-traceable, conservative extractions over broad recall so tests and classroom
-saves never depend on networked models.
+This module is retained as a debug/comparison baseline, not as the production
+knowledge-extraction path. Automatic graph growth now uses
+``LLMKnowledgeExtractor``; when the LLM is unavailable, EDU-Mate reports an
+explicit extraction error instead of silently falling back to these heuristics.
 """
 
 import re
@@ -21,7 +22,7 @@ from .schemas import ExtractionError, ExtractionResult
 
 
 class RuleKnowledgeExtractor(KnowledgeExtractor):
-    """Extract a small, explainable knowledge graph from transcript and OCR text.
+    """Legacy extractor for local experiments and regression comparison.
 
     This extractor is deliberately conservative. It is not trying to solve
     Chinese NLP in full; it gives EDU-Mate a deterministic local baseline that

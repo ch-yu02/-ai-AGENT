@@ -1,6 +1,6 @@
 import unittest
 
-from backend.app.extraction import RuleKnowledgeExtractor
+from backend.app.extraction.rule_extractor import RuleKnowledgeExtractor
 from backend.app.models import ClassroomContext, ImageCapture, TranscriptSegment
 
 

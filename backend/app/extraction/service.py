@@ -1,7 +1,5 @@
 """Orchestration for running internal extraction and applying graph updates."""
 
-import os
-
 from backend.app.core.context_manager import ContextEventError, ContextManager
 from backend.app.core.knowledge_graph_manager import (
     KnowledgeGraphEventError,
@@ -11,7 +9,6 @@ from backend.app.models import ClassroomContext, ImageCapture, RealtimeEvent, Tr
 
 from .knowledge_extractor import KnowledgeExtractor
 from .llm_extractor import LLMKnowledgeExtractor
-from .rule_extractor import RuleKnowledgeExtractor
 from .schemas import AppliedExtraction, ExtractionError, ExtractionResult
 
 
@@ -22,13 +19,14 @@ class KnowledgeExtractionService:
     realtime pipeline. Extractors return ``KnowledgeExtraction`` models; this
     service wraps each one as an internal ``RealtimeEvent`` so the same
     ``ContextManager`` and ``KnowledgeGraphManager`` code path is used for
-    rule-based extraction, future LLM extraction, mock sender data, and tests.
+    LLM-backed extraction, mock sender data, and tests.
     """
 
     def __init__(self, extractor: KnowledgeExtractor | None = None) -> None:
-        # Default to the offline rule extractor so automated tests and local
-        # demos never require API keys or networked model services. Production
-        # can opt into the LLM extractor with KNOWLEDGE_EXTRACTION_BACKEND=llm.
+        # Production now treats LLM extraction as the only automatic knowledge
+        # extraction path. If no provider is configured, LLMKnowledgeExtractor
+        # returns a visible ExtractionError and no graph payload; it does not
+        # silently generate lower-quality rule-based nodes.
         self.extractor = extractor or build_default_extractor()
 
     def should_extract_realtime(
@@ -39,8 +37,8 @@ class KnowledgeExtractionService:
     ) -> bool:
         """Return whether a just-accepted realtime event should trigger extraction.
 
-        The rule extractor is cheap, but we still avoid invoking it on every
-        transcript token. Transcript events trigger only after enough final,
+        LLM calls are expensive and comparatively slow, so realtime extraction
+        must stay batched. Transcript events trigger only after enough final,
         unprocessed segments have accumulated. A processed visual with OCR or a
         caption is allowed to trigger sooner because slide text often carries a
         complete formula or concept by itself.
@@ -159,17 +157,14 @@ class KnowledgeExtractionService:
 
 
 def build_default_extractor() -> KnowledgeExtractor:
-    """Build the configured extractor from backend-only environment variables.
+    """Build the production extractor.
 
-    ``KNOWLEDGE_EXTRACTION_BACKEND`` is intentionally separate from the skill
-    LLM settings. A project can enable LLM summarization or QA while keeping
-    graph extraction deterministic, or opt into model-backed extraction only
-    after prompt/schema behavior is acceptable.
+    EDU-Mate no longer uses the rule extractor as an automatic fallback. This
+    keeps graph semantics honest: when LLM configuration is missing or the model
+    returns invalid JSON, the system reports an extraction error and leaves the
+    graph unchanged.
     """
-    backend = os.getenv("KNOWLEDGE_EXTRACTION_BACKEND", "rule").strip().lower()
-    if backend == "llm":
-        return LLMKnowledgeExtractor()
-    return RuleKnowledgeExtractor()
+    return LLMKnowledgeExtractor()
 
 
 knowledge_extraction_service = KnowledgeExtractionService()

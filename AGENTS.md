@@ -47,17 +47,17 @@ image.capture
 Knowledge extraction is an EDU-Mate responsibility:
 
 - `knowledge.extraction` is an internal pipeline event.
-- It may be produced by the internal rule/LLM knowledge extractor.
+- It may be produced by the internal LLM knowledge extractor.
 - It may be sent by `mock_sender.py` for demo/debug.
 - External ASR/OCR/hardware integrations should not be required to send it.
 
 Current extraction state:
 
-- Rule-based extraction runs at session end and during recording in small
-  batches.
-- Optional LLM-backed extraction is available with
-  `KNOWLEDGE_EXTRACTION_BACKEND=llm`; failures are surfaced as extraction
-  errors and do not automatically fall back to rules.
+- Automatic extraction uses the LLM-backed extractor at session end and during
+  recording in small batches.
+- If the LLM provider is missing or fails, failures are surfaced as extraction
+  errors and graph generation is skipped. EDU-Mate does not automatically fall
+  back to rule-based graph extraction.
 
 ## Commands
 
@@ -241,8 +241,8 @@ Internal EDU-Mate module:
 
 - The internal knowledge extractor reads `ClassroomContext.transcript` and
   `ClassroomContext.visuals`.
-- It generates internal `knowledge.extraction`, currently via the offline
-  rule-based extractor at session end and in recording-time batches.
+- It generates internal `knowledge.extraction` via the LLM-backed extractor at
+  session end and in recording-time batches.
 - `KnowledgeGraphManager` applies the generated extraction to the graph.
 
 ## API Summary

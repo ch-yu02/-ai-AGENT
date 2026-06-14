@@ -13,9 +13,8 @@ class KnowledgeExtractor(ABC):
     Implementations are responsible only for turning already-normalized
     classroom context into candidate ``KnowledgeExtraction`` objects. They do
     not mutate context, update the graph, broadcast WebSocket messages, or write
-    storage files. Keeping the interface pure makes the rule extractor easy to
-    test and lets future LLM-backed extractors expose failures without half
-    applying graph changes.
+    storage files. Keeping the interface pure lets LLM-backed extractors expose
+    failures without half applying graph changes.
     """
 
     provider_name = "base"

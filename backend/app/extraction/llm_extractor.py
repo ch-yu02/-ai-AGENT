@@ -1,9 +1,9 @@
 """LLM-backed internal knowledge extractor.
 
-This module is intentionally separate from ``RuleKnowledgeExtractor``. The
-project decision is that LLM extraction failures should be visible and should
-not silently fall back to rules, because a fallback can make users believe a
-model-backed graph was generated when it was not.
+This is the production knowledge-extraction path. The older rule extractor is
+kept only as a legacy/debug baseline; automatic extraction should use the LLM
+path and surface failures explicitly instead of silently creating weaker graph
+nodes.
 """
 
 from typing import Any, Protocol
@@ -65,7 +65,7 @@ class LLMKnowledgeExtractor(KnowledgeExtractor):
         if client is None:
             return self._error_result(
                 "LLMNotConfigured",
-                "KNOWLEDGE_EXTRACTION_BACKEND=llm but LLM provider is not configured",
+                "LLM knowledge extraction requires a configured LLM provider",
                 processed_source_ids,
             )
 
