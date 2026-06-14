@@ -38,7 +38,8 @@
 
 - 外部 ASR/OCR 模块不负责知识抽取。
 - `knowledge.extraction` 是 EDU-Mate 内部事件。
-- 真实内部知识抽取模块仍是下一阶段重点。
+- 规则版内部知识抽取已在 session end 阶段接入。
+- 录制中批量抽取和 LLM-backed 抽取仍是下一阶段重点。
 
 ## 2. 当前数据流
 
@@ -52,6 +53,7 @@ OCR/VLM -> image.capture
 当前图谱输入：
 
 ```text
+session end rule extractor -> knowledge.extraction
 mock sender/debug -> knowledge.extraction
 KnowledgeGraphManager -> GraphPatch
 ```
@@ -68,18 +70,21 @@ transcript.segment + image.capture
 
 ## 3. 下一阶段：内部知识抽取
 
-目标：只靠 ASR/OCR 输入也能让知识图谱增长。
+目标：在 session end 规则抽取的基础上，补齐录制中批量抽取和可选 LLM 抽取。
 
-建议新增：
+已新增：
 
 ```text
 backend/app/extraction/
   __init__.py
+  service.py
   knowledge_extractor.py
+  rule_extractor.py
+  llm_extractor.py
   schemas.py
 ```
 
-第一版使用规则抽取，不依赖 LLM：
+第一版已使用规则抽取，不依赖 LLM：
 
 - 从最近 N 条 transcript 中抽取候选术语。
 - 从 OCR/caption 中抽取公式和概念。
@@ -89,12 +94,36 @@ backend/app/extraction/
   - `defines`
   - `related_to`
 - 保留 source refs。
+- 输出结构必须校验为 `KnowledgeExtraction`。
+- 抽取不到有效实体时返回空结果，不制造低置信度节点。
 
 第二版接 LLM：
 
 - 使用 `CloudLLMClient`。
 - 输出结构必须校验为 `KnowledgeExtraction`。
-- 失败时回退规则抽取或返回 warning。
+- 失败时不回退规则抽取。
+- 失败时返回明确错误信息，说明 provider、错误类型和是否生成图谱。
+- schema 校验失败时不写入 `knowledge.extraction`，避免污染图谱。
+
+核心接口建议：
+
+```text
+KnowledgeExtractor.extract(context) -> ExtractionResult
+```
+
+`ExtractionResult` 应包含：
+
+- `extractions`：成功生成的 `KnowledgeExtraction[]`。
+- `errors`：抽取失败信息列表，供 API 响应、WebSocket warning 或日志使用。
+- `processed_source_ids`：本次已消费的 segment/image ID，用于去重。
+
+错误处理原则：
+
+- 规则版 extractor 失败：记录错误，返回空 `extractions`。
+- LLM-backed extractor 失败：记录错误，返回空 `extractions`。
+- 不把失败伪装成低质量 `knowledge.extraction`。
+- 不在 LLM 失败时自动调用规则版兜底；是否选择规则版或 LLM 版由配置决定。
+- 抽取失败不能影响字幕、OCR、课堂结束和已有图谱保存。
 
 触发策略建议：
 
@@ -105,6 +134,14 @@ backend/app/extraction/
 ```
 
 不要在 `POST /events` 中做长时间阻塞。
+
+接入点建议：
+
+1. 已在 session end 保存前执行批量抽取。
+2. 已将成功的 `KnowledgeExtraction` 转成内部 `RealtimeEvent`。
+3. 已依次交给 `ContextManager` 和 `KnowledgeGraphManager`。
+4. 已把 extraction errors 放入结束课堂 WebSocket storage payload。
+5. 中期再接入录制中批量触发，避免第一版影响 `POST /events` 热路径。
 
 ## 4. RAG 后续计划
 
@@ -185,24 +222,25 @@ backend/app/extraction/
 
 ## 8. 推荐实现顺序
 
-1. 内部规则版 `KnowledgeExtractor`。
-2. 将 extractor 接到 session end，先保证结束课堂后自动生成图谱。
-3. 将 extractor 接到录制中批量触发。
-4. 给 extractor 增加 LLM-backed 可选实现。
-5. 全局索引 rebuild 命令。
-6. Provider / embedding 安装文档。
-7. 前端 deep-link 和 source focus 测试。
+1. 将 extractor 接到录制中批量触发。
+2. 给 extractor 增加 LLM-backed 可选实现，并显式输出失败错误。
+3. 全局索引 rebuild 命令。
+4. Provider / embedding 安装文档。
+5. 前端 deep-link 和 source focus 测试。
 
 ## 9. 验收标准
 
 内部知识抽取验收：
 
-- 只发送 `transcript.segment` 和 `image.capture`，不发送 mock
+- 已支持只发送 `transcript.segment` 和 `image.capture`，不发送 mock
   `knowledge.extraction`，结束课堂后仍生成知识图谱。
-- 生成的节点有稳定 label。
-- 生成的边有可解释 relation。
-- 每个节点/边尽量带 source refs。
-- 抽取失败不影响课堂保存。
+- 已生成稳定 label 的节点。
+- 已生成可解释 relation 的边。
+- 已尽量为节点/边附带 source refs。
+- 已保证抽取失败不影响课堂保存。
+- LLM 抽取失败时返回可读错误信息，不自动回退规则抽取。
+- schema 校验失败的抽取结果不会写入图谱。
+- 待补齐录制中实时图谱增长验收。
 
 Agent/RAG 验收：
 

@@ -42,6 +42,7 @@ from backend.app.core import (
     session_manager,
     websocket_manager,
 )
+from backend.app.extraction import knowledge_extraction_service
 from backend.app.rag import LlamaIndexQueryService, build_session_documents
 from backend.app.models import (
     LectureSession,
@@ -220,6 +221,11 @@ async def end_session(session_id: str) -> LectureSession:
     except KnowledgeGraphNotFoundError:
         raise HTTPException(status_code=404, detail="Knowledge graph not found")
 
+    extraction_result = _run_internal_knowledge_extraction(
+        session_id=session_id,
+        context=context,
+    )
+
     try:
         ended_session = session_manager.end_session(session_id)
     except SessionNotFoundError:
@@ -259,11 +265,33 @@ async def end_session(session_id: str) -> LectureSession:
                         for name, path in post_class_files.items()
                     },
                     "rag_index": rag_index,
+                    "knowledge_extraction": extraction_result,
                 },
             },
         ),
     )
     return ended_session
+
+
+def _run_internal_knowledge_extraction(session_id: str, context) -> dict[str, object]:
+    """Run internal extraction before saving the final classroom snapshot.
+
+    Successful extractions are routed through the same internal event path used
+    by mock/debug knowledge events. Failures are surfaced as explicit errors and
+    do not block saving the classroom.
+    """
+    result = knowledge_extraction_service.extract_and_apply(
+        context=context,
+        context_manager=context_manager,
+        knowledge_graph_manager=knowledge_graph_manager,
+    )
+    return {
+        "session_id": session_id,
+        "provider": knowledge_extraction_service.extractor.provider_name,
+        "extraction_count": len(result.extractions),
+        "processed_source_ids": result.processed_source_ids,
+        "errors": [error.model_dump() for error in result.errors],
+    }
 
 
 def _generate_and_save_post_class_artifacts(

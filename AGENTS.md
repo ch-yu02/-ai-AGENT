@@ -29,6 +29,9 @@ Completed core capabilities:
   environment variables.
 - Optional RAG: lexical search by default, optional LlamaIndex backends for
   single-session and global indexes.
+- Internal knowledge extraction: offline rule-based extraction runs on session
+  end and turns transcript/OCR context into internal `knowledge.extraction`
+  events for graph growth.
 - Mock sender: sends ASR, visual, and mock internal knowledge extraction events
   to a session created manually from the frontend.
 
@@ -50,8 +53,8 @@ Knowledge extraction is an EDU-Mate responsibility:
 
 Current limitation:
 
-- The graph pipeline can consume `knowledge.extraction`, but automatic internal
-  extraction from ASR/OCR is still a planned implementation item.
+- Rule-based extraction currently runs at session end. Recording-time batched
+  extraction and optional LLM-backed extraction are still planned.
 
 ## Commands
 
@@ -233,9 +236,10 @@ External modules:
 
 Internal EDU-Mate module:
 
-- Future knowledge extractor reads `ClassroomContext.transcript` and
+- The internal knowledge extractor reads `ClassroomContext.transcript` and
   `ClassroomContext.visuals`.
-- It generates internal `knowledge.extraction`.
+- It generates internal `knowledge.extraction`, currently via the offline
+  rule-based extractor at session end.
 - `KnowledgeGraphManager` applies the generated extraction to the graph.
 
 ## API Summary
@@ -375,10 +379,11 @@ scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 
 Highest priority:
 
-1. Implement the internal knowledge extraction module.
-2. Stop depending on mock `knowledge.extraction` for real graph growth.
-3. Add tests for extraction from transcript/OCR to internal extraction payload.
-4. Wire extraction into the event flow without blocking realtime `POST /events`.
+1. Add recording-time batched internal knowledge extraction.
+2. Add optional LLM-backed knowledge extraction with explicit errors and no
+   automatic rule fallback.
+3. Document and tune extraction quality fixtures.
+4. Keep extraction out of the blocking realtime `POST /events` hot path.
 
 Next:
 
