@@ -44,6 +44,7 @@ from backend.app.core import (
     session_manager,
     websocket_manager,
 )
+from backend.app.extraction import ExtractionResult, knowledge_extraction_service
 from backend.app.models import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
 
 
@@ -128,26 +129,27 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     except KnowledgeGraphEventError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    realtime_extraction = _run_realtime_knowledge_extraction(event)
+
     # ── 步骤 4：WebSocket 广播 ─────────────────────────────────────
     # 将处理结果推送给该 session 的所有已连接前端。消息包含：
     #   - event_type / payload：原始事件信息（供前端判断事件种类）
     #   - event_count：该 session 累计事件数（可用于检测丢包）
     #   - context_update：ContextManager 处理后的上下文变更摘要
     #   - graph_patch：KnowledgeGraphManager 生成的图谱增量补丁
-    await websocket_manager.broadcast(
-        event.session_id,
-        WebSocketMessage(
-            type="event.received",
-            session_id=event.session_id,
-            data={
-                "event_type": event.event_type,
-                "payload": event.payload,
-                "event_count": event_count,
-                "context_update": context_update.model_dump(),
-                "graph_patch": graph_patch.model_dump() if graph_patch else None,
-            },
+    await _broadcast_event_received(
+        event=event,
+        event_count=event_count,
+        context_update=context_update.model_dump(),
+        graph_patch=graph_patch.model_dump() if graph_patch else None,
+        knowledge_extraction=(
+            _extraction_result_payload(event.session_id, realtime_extraction)
+            if realtime_extraction is not None
+            else None
         ),
     )
+    if realtime_extraction is not None:
+        await _broadcast_internal_extractions(realtime_extraction)
 
     # ── 步骤 5：返回确认 ──────────────────────────────────────────
     # 使用 HTTP 202 Accepted 表示事件已接收并开始处理，而非同步完成。
@@ -158,3 +160,101 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
         event_type=event.event_type,
         event_count=event_count,
     )
+
+
+def _run_realtime_knowledge_extraction(event: RealtimeEvent) -> ExtractionResult | None:
+    """Run lightweight batched extraction after ASR/OCR events when due.
+
+    This helper intentionally runs only after the original event has been
+    accepted by ``ContextManager`` and ``KnowledgeGraphManager``. The triggering
+    event remains visible as its own WebSocket update, while any generated
+    internal extraction is broadcast as a second ``event.received`` message.
+    """
+    try:
+        context = context_manager.get_context(event.session_id)
+    except ContextNotFoundError:
+        return None
+
+    if not knowledge_extraction_service.should_extract_realtime(context, event):
+        return None
+
+    result = knowledge_extraction_service.extract_and_apply(
+        context=context,
+        context_manager=context_manager,
+        knowledge_graph_manager=knowledge_graph_manager,
+    )
+    return result
+
+
+def _extraction_result_payload(
+    session_id: str,
+    result: ExtractionResult,
+) -> dict[str, object]:
+    """Create a compact status payload for realtime extraction attempts."""
+    return {
+        "session_id": session_id,
+        "provider": knowledge_extraction_service.extractor.provider_name,
+        "extraction_count": len(result.extractions),
+        "processed_source_ids": result.processed_source_ids,
+        "errors": [error.model_dump() for error in result.errors],
+        "applied": [
+            {
+                "extraction_id": item.extraction.extraction_id,
+                "graph_patch_operations": (
+                    len(item.graph_patch.operations) if item.graph_patch else 0
+                ),
+            }
+            for item in result.applied
+        ],
+    }
+
+
+async def _broadcast_event_received(
+    *,
+    event: RealtimeEvent,
+    event_count: int,
+    context_update: dict[str, object],
+    graph_patch: dict[str, object] | None,
+    knowledge_extraction: dict[str, object] | None = None,
+) -> None:
+    """Broadcast the standard event.received envelope."""
+    data = {
+        "event_type": event.event_type,
+        "payload": event.payload,
+        "event_count": event_count,
+        "context_update": context_update,
+        "graph_patch": graph_patch,
+    }
+    if knowledge_extraction is not None:
+        data["knowledge_extraction"] = knowledge_extraction
+
+    await websocket_manager.broadcast(
+        event.session_id,
+        WebSocketMessage(
+            type="event.received",
+            session_id=event.session_id,
+            data=data,
+        ),
+    )
+
+
+async def _broadcast_internal_extractions(result: ExtractionResult) -> None:
+    """Broadcast each applied internal extraction as a normal knowledge event."""
+    for item in result.applied:
+        event = RealtimeEvent(
+            session_id=item.extraction.session_id,
+            event_type="knowledge.extraction",
+            payload=item.extraction.model_dump(),
+        )
+        update = item.context_update
+        event_count = (
+            update.transcript_count
+            + update.visual_count
+            + update.knowledge_extraction_count
+        )
+        await _broadcast_event_received(
+            event=event,
+            event_count=event_count,
+            context_update=update.model_dump(),
+            graph_patch=item.graph_patch.model_dump() if item.graph_patch else None,
+        )

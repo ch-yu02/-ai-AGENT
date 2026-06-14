@@ -2,7 +2,7 @@
 
 from pydantic import BaseModel, Field
 
-from backend.app.models import KnowledgeExtraction
+from backend.app.models import ContextUpdate, GraphPatch, KnowledgeExtraction
 
 
 class ExtractionError(BaseModel):
@@ -35,3 +35,19 @@ class ExtractionResult(BaseModel):
     extractions: list[KnowledgeExtraction] = Field(default_factory=list)
     errors: list[ExtractionError] = Field(default_factory=list)
     processed_source_ids: list[str] = Field(default_factory=list)
+    applied: list["AppliedExtraction"] = Field(default_factory=list)
+
+
+class AppliedExtraction(BaseModel):
+    """One extraction that was accepted by context and graph managers.
+
+    Realtime extraction needs more than the raw ``KnowledgeExtraction`` model:
+    the WebSocket payload must include the same ``context_update`` and
+    ``graph_patch`` fields as a normal ``POST /events`` knowledge event. Keeping
+    those values here lets the API layer broadcast internal extraction without
+    recomputing counts or graph patches.
+    """
+
+    extraction: KnowledgeExtraction
+    context_update: ContextUpdate
+    graph_patch: GraphPatch | None = None

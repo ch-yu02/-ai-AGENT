@@ -43,6 +43,87 @@ class KnowledgeExtractionServiceTest(unittest.TestCase):
         self.assertGreaterEqual(len(graph.nodes), 2)
         self.assertGreaterEqual(len(graph.edges), 1)
 
+    def test_realtime_trigger_waits_for_transcript_batch(self) -> None:
+        for index in range(2):
+            self.context_manager.handle_event(
+                RealtimeEvent(
+                    session_id=self.session_id,
+                    event_type="transcript.segment",
+                    payload={
+                        "segment_id": f"seg_00{index + 1}",
+                        "start_ts": float(index),
+                        "end_ts": float(index + 1),
+                        "text": "采样定理是通信系统的重要概念。",
+                    },
+                )
+            )
+
+        event = RealtimeEvent(
+            session_id=self.session_id,
+            event_type="transcript.segment",
+            payload={"segment_id": "seg_002"},
+        )
+        self.assertFalse(self.service.should_extract_realtime(self.context, event))
+
+        self.context_manager.handle_event(
+            RealtimeEvent(
+                session_id=self.session_id,
+                event_type="transcript.segment",
+                payload={
+                    "segment_id": "seg_003",
+                    "start_ts": 2.0,
+                    "end_ts": 3.0,
+                    "text": "傅里叶变换可以把时域信号转换到频域。",
+                },
+            )
+        )
+        event = RealtimeEvent(
+            session_id=self.session_id,
+            event_type="transcript.segment",
+            payload={"segment_id": "seg_003"},
+        )
+        self.assertTrue(self.service.should_extract_realtime(self.context, event))
+
+    def test_realtime_trigger_accepts_processed_visual_with_text(self) -> None:
+        self.context_manager.handle_event(
+            RealtimeEvent(
+                session_id=self.session_id,
+                event_type="image.capture",
+                payload={
+                    "image_id": "img_empty",
+                    "capture_ts": 1.0,
+                    "image_path": "local://empty.jpg",
+                    "status": "processed",
+                },
+            )
+        )
+        event = RealtimeEvent(
+            session_id=self.session_id,
+            event_type="image.capture",
+            payload={"image_id": "img_empty"},
+        )
+        self.assertFalse(self.service.should_extract_realtime(self.context, event))
+
+        self.context_manager.handle_event(
+            RealtimeEvent(
+                session_id=self.session_id,
+                event_type="image.capture",
+                payload={
+                    "image_id": "img_formula",
+                    "capture_ts": 2.0,
+                    "image_path": "local://formula.jpg",
+                    "status": "processed",
+                    "ocr_text": "X(f)=∫x(t)e^{-j2πft}dt",
+                },
+            )
+        )
+        event = RealtimeEvent(
+            session_id=self.session_id,
+            event_type="image.capture",
+            payload={"image_id": "img_formula"},
+        )
+        self.assertTrue(self.service.should_extract_realtime(self.context, event))
+
 
 if __name__ == "__main__":
     unittest.main()

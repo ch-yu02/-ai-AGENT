@@ -53,8 +53,8 @@ Knowledge extraction is an EDU-Mate responsibility:
 
 Current limitation:
 
-- Rule-based extraction currently runs at session end. Recording-time batched
-  extraction and optional LLM-backed extraction are still planned.
+- Rule-based extraction runs at session end and during recording in small
+  batches. Optional LLM-backed extraction is still planned.
 
 ## Commands
 
@@ -239,7 +239,7 @@ Internal EDU-Mate module:
 - The internal knowledge extractor reads `ClassroomContext.transcript` and
   `ClassroomContext.visuals`.
 - It generates internal `knowledge.extraction`, currently via the offline
-  rule-based extractor at session end.
+  rule-based extractor at session end and in recording-time batches.
 - `KnowledgeGraphManager` applies the generated extraction to the graph.
 
 ## API Summary
@@ -281,6 +281,9 @@ POST /agent/search
   incremental timeline item.
 - `event.received.data.graph_patch` is optional and normally appears only when
   internal `knowledge.extraction` updates the graph.
+- ASR/OCR events may include `event.received.data.knowledge_extraction` when
+  they trigger batched internal extraction; the actual graph update is then
+  broadcast as a separate `knowledge.extraction` event.
 - Apply graph patch operations in order.
 - Keep transcript, timeline, visuals, graph, and Agent artifacts visible after
   session end.
@@ -379,11 +382,10 @@ scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 
 Highest priority:
 
-1. Add recording-time batched internal knowledge extraction.
-2. Add optional LLM-backed knowledge extraction with explicit errors and no
+1. Add optional LLM-backed knowledge extraction with explicit errors and no
    automatic rule fallback.
-3. Document and tune extraction quality fixtures.
-4. Keep extraction out of the blocking realtime `POST /events` hot path.
+2. Document and tune extraction quality fixtures.
+3. Keep extraction lightweight in the realtime `POST /events` path.
 
 Next:
 

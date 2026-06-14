@@ -33,7 +33,8 @@
 - [x] 外部模块只需发送 `transcript.segment` 和 `image.capture`
 - [x] `knowledge.extraction` 是 EDU-Mate 内部管线事件或 mock/debug 数据
 - [x] 规则版内部知识抽取已接入 session end
-- [ ] 录制中批量触发和 LLM-backed 知识抽取尚未实现
+- [x] 规则版内部知识抽取已接入录制中批量触发
+- [ ] LLM-backed 知识抽取尚未实现
 
 ## 1. P0：内部知识抽取模块
 
@@ -47,12 +48,12 @@
 - [x] 保证 `source_segment_ids` 和 `source_visual_ids` 可追溯
 - [x] 生成稳定 entity name、entity_id、relation
 - [x] 将抽取结果交给 `ContextManager` / `KnowledgeGraphManager`
-- [x] 确定触发策略：第一阶段先在 session end 批量触发
+- [x] 确定触发策略：session end 批量触发，录制中每 3 条 final 字幕或带文字视觉事件触发
 - [x] 避免在 `POST /events` 热路径中阻塞太久
 - [x] 增加规则版 extractor，先不依赖云端 LLM
 - [ ] 增加 LLM-backed extractor 可选实现
 - [x] 增加单元测试和 fixture
-- [ ] 增加录制中每 N 条字幕或每 N 秒的批量触发
+- [x] 增加录制中每 N 条字幕或每 N 秒的批量触发
 
 验收：
 
@@ -60,7 +61,7 @@
 - [x] mock sender 不再是图谱增长的唯一方式
 - [x] 抽取失败不会影响字幕/OCR 展示或课堂保存
 - [x] 来源引用能对应 transcript 或 visual
-- [ ] 只发送 ASR/OCR 输入，录制中前端知识图谱也能实时增长
+- [x] 只发送 ASR/OCR 输入，录制中前端知识图谱也能实时增长
 
 ## 2. P0：能力边界与接口联调
 

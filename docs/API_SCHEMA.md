@@ -624,6 +624,27 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 - `context_update.timeline_item` 可直接追加到前端时间线。
 - `graph_patch` 只有 `knowledge.extraction` 事件会产生；字幕和图片事件通常为 `null`。
 - 前端应按 `graph_patch.operations` 顺序应用图谱变更。
+- 字幕或图片事件如果触发内部批量抽取，`data.knowledge_extraction` 会包含
+  本次抽取摘要；真正的图谱变更仍会随后以独立的 `knowledge.extraction`
+  `event.received` 消息广播。
+
+`data.knowledge_extraction` 示例：
+
+```json
+{
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "provider": "rule",
+  "extraction_count": 1,
+  "processed_source_ids": ["seg_001", "seg_002", "seg_003"],
+  "errors": [],
+  "applied": [
+    {
+      "extraction_id": "ext_lec_xxx_seg_001_seg_002_seg_003",
+      "graph_patch_operations": 3
+    }
+  ]
+}
+```
 
 ### session.ended
 

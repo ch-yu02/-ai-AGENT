@@ -39,7 +39,8 @@
 - 外部 ASR/OCR 模块不负责知识抽取。
 - `knowledge.extraction` 是 EDU-Mate 内部事件。
 - 规则版内部知识抽取已在 session end 阶段接入。
-- 录制中批量抽取和 LLM-backed 抽取仍是下一阶段重点。
+- 规则版内部知识抽取已在录制中批量触发。
+- LLM-backed 抽取仍是下一阶段重点。
 
 ## 2. 当前数据流
 
@@ -53,6 +54,7 @@ OCR/VLM -> image.capture
 当前图谱输入：
 
 ```text
+recording-time rule extractor -> knowledge.extraction
 session end rule extractor -> knowledge.extraction
 mock sender/debug -> knowledge.extraction
 KnowledgeGraphManager -> GraphPatch
@@ -70,7 +72,7 @@ transcript.segment + image.capture
 
 ## 3. 下一阶段：内部知识抽取
 
-目标：在 session end 规则抽取的基础上，补齐录制中批量抽取和可选 LLM 抽取。
+目标：在规则版抽取的基础上，补齐可选 LLM 抽取和质量调优。
 
 已新增：
 
@@ -129,7 +131,8 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 
 ```text
 短期：session end 时批量抽取
-中期：每 N 条 transcript 批量抽取
+已实现：每 3 条 final transcript 批量抽取
+已实现：带 OCR/caption 的 processed visual 可触发抽取
 长期：后台队列异步抽取
 ```
 
@@ -141,7 +144,7 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 2. 已将成功的 `KnowledgeExtraction` 转成内部 `RealtimeEvent`。
 3. 已依次交给 `ContextManager` 和 `KnowledgeGraphManager`。
 4. 已把 extraction errors 放入结束课堂 WebSocket storage payload。
-5. 中期再接入录制中批量触发，避免第一版影响 `POST /events` 热路径。
+5. 已接入录制中批量触发；后续如抽取变重，再迁移到后台队列。
 
 ## 4. RAG 后续计划
 
@@ -222,11 +225,10 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 
 ## 8. 推荐实现顺序
 
-1. 将 extractor 接到录制中批量触发。
-2. 给 extractor 增加 LLM-backed 可选实现，并显式输出失败错误。
-3. 全局索引 rebuild 命令。
-4. Provider / embedding 安装文档。
-5. 前端 deep-link 和 source focus 测试。
+1. 给 extractor 增加 LLM-backed 可选实现，并显式输出失败错误。
+2. 全局索引 rebuild 命令。
+3. Provider / embedding 安装文档。
+4. 前端 deep-link 和 source focus 测试。
 
 ## 9. 验收标准
 
@@ -240,7 +242,7 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 - 已保证抽取失败不影响课堂保存。
 - LLM 抽取失败时返回可读错误信息，不自动回退规则抽取。
 - schema 校验失败的抽取结果不会写入图谱。
-- 待补齐录制中实时图谱增长验收。
+- 已支持录制中实时图谱增长。
 
 Agent/RAG 验收：
 
