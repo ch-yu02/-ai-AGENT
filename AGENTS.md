@@ -47,14 +47,17 @@ image.capture
 Knowledge extraction is an EDU-Mate responsibility:
 
 - `knowledge.extraction` is an internal pipeline event.
-- It may be produced by the future internal knowledge extractor.
+- It may be produced by the internal rule/LLM knowledge extractor.
 - It may be sent by `mock_sender.py` for demo/debug.
 - External ASR/OCR/hardware integrations should not be required to send it.
 
-Current limitation:
+Current extraction state:
 
 - Rule-based extraction runs at session end and during recording in small
-  batches. Optional LLM-backed extraction is still planned.
+  batches.
+- Optional LLM-backed extraction is available with
+  `KNOWLEDGE_EXTRACTION_BACKEND=llm`; failures are surfaced as extraction
+  errors and do not automatically fall back to rules.
 
 ## Commands
 
@@ -382,9 +385,8 @@ scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 
 Highest priority:
 
-1. Add optional LLM-backed knowledge extraction with explicit errors and no
-   automatic rule fallback.
-2. Document and tune extraction quality fixtures.
+1. Document real provider setup for LLM-backed knowledge extraction.
+2. Tune extraction quality fixtures and prompts.
 3. Keep extraction lightweight in the realtime `POST /events` path.
 
 Next:

@@ -1,7 +1,13 @@
 import unittest
+from unittest.mock import patch
 
 from backend.app.core import ContextManager, KnowledgeGraphManager
-from backend.app.extraction import KnowledgeExtractionService, RuleKnowledgeExtractor
+from backend.app.extraction import (
+    LLMKnowledgeExtractor,
+    KnowledgeExtractionService,
+    RuleKnowledgeExtractor,
+)
+from backend.app.extraction.service import build_default_extractor
 from backend.app.models import RealtimeEvent
 
 
@@ -123,6 +129,13 @@ class KnowledgeExtractionServiceTest(unittest.TestCase):
             payload={"image_id": "img_formula"},
         )
         self.assertTrue(self.service.should_extract_realtime(self.context, event))
+
+    def test_default_extractor_uses_rule_backend_unless_llm_is_requested(self) -> None:
+        with patch.dict("os.environ", {"KNOWLEDGE_EXTRACTION_BACKEND": ""}, clear=True):
+            self.assertIsInstance(build_default_extractor(), RuleKnowledgeExtractor)
+
+        with patch.dict("os.environ", {"KNOWLEDGE_EXTRACTION_BACKEND": "llm"}, clear=True):
+            self.assertIsInstance(build_default_extractor(), LLMKnowledgeExtractor)
 
 
 if __name__ == "__main__":

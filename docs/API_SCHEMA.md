@@ -646,6 +646,28 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 }
 ```
 
+知识抽取后端选择：
+
+```text
+KNOWLEDGE_EXTRACTION_BACKEND=rule  # 默认，离线规则版
+KNOWLEDGE_EXTRACTION_BACKEND=llm   # 使用 OpenAI-compatible LLM provider
+```
+
+LLM-backed extraction 复用后端 LLM 环境变量：
+
+```text
+LLM_PROVIDER
+LLM_API_KEY
+LLM_MODEL
+LLM_BASE_URL
+LLM_TIMEOUT_SECONDS
+LLM_MAX_RETRIES
+```
+
+如果 LLM 未配置、调用失败或返回内容无法校验为 `KnowledgeExtraction`，
+后端会在 `knowledge_extraction.errors` 中返回错误信息，不会自动回退规则版，
+也不会把无效抽取写入图谱。
+
 ### session.ended
 
 调用 `POST /sessions/{session_id}/end` 后广播。

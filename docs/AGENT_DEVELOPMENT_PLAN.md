@@ -40,7 +40,7 @@
 - `knowledge.extraction` 是 EDU-Mate 内部事件。
 - 规则版内部知识抽取已在 session end 阶段接入。
 - 规则版内部知识抽取已在录制中批量触发。
-- LLM-backed 抽取仍是下一阶段重点。
+- LLM-backed 抽取已实现，可通过 `KNOWLEDGE_EXTRACTION_BACKEND=llm` 启用。
 
 ## 2. 当前数据流
 
@@ -72,7 +72,7 @@ transcript.segment + image.capture
 
 ## 3. 下一阶段：内部知识抽取
 
-目标：在规则版抽取的基础上，补齐可选 LLM 抽取和质量调优。
+目标：在规则版和 LLM-backed 抽取基础上，补齐真实 provider 文档和质量调优。
 
 已新增：
 
@@ -99,13 +99,14 @@ backend/app/extraction/
 - 输出结构必须校验为 `KnowledgeExtraction`。
 - 抽取不到有效实体时返回空结果，不制造低置信度节点。
 
-第二版接 LLM：
+第二版已接 LLM：
 
 - 使用 `CloudLLMClient`。
 - 输出结构必须校验为 `KnowledgeExtraction`。
 - 失败时不回退规则抽取。
 - 失败时返回明确错误信息，说明 provider、错误类型和是否生成图谱。
 - schema 校验失败时不写入 `knowledge.extraction`，避免污染图谱。
+- 启用方式：`KNOWLEDGE_EXTRACTION_BACKEND=llm`。
 
 核心接口建议：
 
@@ -225,10 +226,9 @@ KnowledgeExtractor.extract(context) -> ExtractionResult
 
 ## 8. 推荐实现顺序
 
-1. 给 extractor 增加 LLM-backed 可选实现，并显式输出失败错误。
-2. 全局索引 rebuild 命令。
-3. Provider / embedding 安装文档。
-4. 前端 deep-link 和 source focus 测试。
+1. 全局索引 rebuild 命令。
+2. Provider / embedding / LLM extraction 安装文档。
+3. 前端 deep-link 和 source focus 测试。
 
 ## 9. 验收标准
 

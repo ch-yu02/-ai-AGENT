@@ -35,6 +35,10 @@ class ExtractionResult(BaseModel):
     extractions: list[KnowledgeExtraction] = Field(default_factory=list)
     errors: list[ExtractionError] = Field(default_factory=list)
     processed_source_ids: list[str] = Field(default_factory=list)
+    # ``applied`` is filled by KnowledgeExtractionService, not by bare
+    # extractors. It records the exact manager outputs produced when an
+    # extraction was accepted, which lets realtime broadcasting avoid applying
+    # the same extraction twice.
     applied: list["AppliedExtraction"] = Field(default_factory=list)
 
 

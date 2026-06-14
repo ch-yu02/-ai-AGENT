@@ -1,5 +1,7 @@
 """Orchestration for running internal extraction and applying graph updates."""
 
+import os
+
 from backend.app.core.context_manager import ContextEventError, ContextManager
 from backend.app.core.knowledge_graph_manager import (
     KnowledgeGraphEventError,
@@ -8,6 +10,7 @@ from backend.app.core.knowledge_graph_manager import (
 from backend.app.models import ClassroomContext, ImageCapture, RealtimeEvent, TranscriptSegment
 
 from .knowledge_extractor import KnowledgeExtractor
+from .llm_extractor import LLMKnowledgeExtractor
 from .rule_extractor import RuleKnowledgeExtractor
 from .schemas import AppliedExtraction, ExtractionError, ExtractionResult
 
@@ -23,7 +26,10 @@ class KnowledgeExtractionService:
     """
 
     def __init__(self, extractor: KnowledgeExtractor | None = None) -> None:
-        self.extractor = extractor or RuleKnowledgeExtractor()
+        # Default to the offline rule extractor so automated tests and local
+        # demos never require API keys or networked model services. Production
+        # can opt into the LLM extractor with KNOWLEDGE_EXTRACTION_BACKEND=llm.
+        self.extractor = extractor or build_default_extractor()
 
     def should_extract_realtime(
         self,
@@ -44,8 +50,13 @@ class KnowledgeExtractionService:
 
         unprocessed_transcript, unprocessed_visuals = self._unprocessed_sources(context)
         if event.event_type == "transcript.segment":
+            # Batch ASR text so the route does not run extraction for every
+            # short sentence. The default threshold is intentionally tiny for
+            # demo responsiveness and can become configurable later.
             return len(unprocessed_transcript) >= transcript_batch_size
 
+        # Visual text often arrives as a complete slide/formula, so a single
+        # processed image with OCR/caption is enough to justify extraction.
         return any(self._visual_has_text(visual) for visual in unprocessed_visuals)
 
     def extract_and_apply(
@@ -115,6 +126,12 @@ class KnowledgeExtractionService:
         self,
         context: ClassroomContext,
     ) -> tuple[list[TranscriptSegment], list[ImageCapture]]:
+        """Return final transcript and processed visuals not yet extracted.
+
+        Existing ``context.knowledge_extractions`` are the source ledger. This
+        keeps realtime and session-end extraction idempotent without a separate
+        database table or background job state.
+        """
         processed_segments = set()
         processed_visuals = set()
         for extraction in context.knowledge_extractions:
@@ -134,10 +151,25 @@ class KnowledgeExtractionService:
         return transcript, visuals
 
     def _visual_has_text(self, visual: ImageCapture) -> bool:
+        """Return true when OCR or VLM caption text is available to extract."""
         return bool(
             (visual.ocr_text and visual.ocr_text.strip())
             or (visual.caption and visual.caption.strip())
         )
+
+
+def build_default_extractor() -> KnowledgeExtractor:
+    """Build the configured extractor from backend-only environment variables.
+
+    ``KNOWLEDGE_EXTRACTION_BACKEND`` is intentionally separate from the skill
+    LLM settings. A project can enable LLM summarization or QA while keeping
+    graph extraction deterministic, or opt into model-backed extraction only
+    after prompt/schema behavior is acceptable.
+    """
+    backend = os.getenv("KNOWLEDGE_EXTRACTION_BACKEND", "rule").strip().lower()
+    if backend == "llm":
+        return LLMKnowledgeExtractor()
+    return RuleKnowledgeExtractor()
 
 
 knowledge_extraction_service = KnowledgeExtractionService()

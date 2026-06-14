@@ -129,6 +129,10 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
     except KnowledgeGraphEventError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
+    # Realtime extraction runs after the triggering ASR/OCR event has already
+    # entered the classroom context. That means the extractor sees the newest
+    # transcript/visual data, but the original event can still be acknowledged
+    # and broadcast as its own update.
     realtime_extraction = _run_realtime_knowledge_extraction(event)
 
     # ── 步骤 4：WebSocket 广播 ─────────────────────────────────────
@@ -143,6 +147,10 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
         context_update=context_update.model_dump(),
         graph_patch=graph_patch.model_dump() if graph_patch else None,
         knowledge_extraction=(
+            # Keep this as a lightweight status object on the triggering event.
+            # The full graph mutation is broadcast below as a normal internal
+            # knowledge.extraction event so the frontend can reuse its existing
+            # graph_patch handling.
             _extraction_result_payload(event.session_id, realtime_extraction)
             if realtime_extraction is not None
             else None
@@ -178,6 +186,8 @@ def _run_realtime_knowledge_extraction(event: RealtimeEvent) -> ExtractionResult
     if not knowledge_extraction_service.should_extract_realtime(context, event):
         return None
 
+    # The service applies successful extractions immediately and returns the
+    # ContextUpdate/GraphPatch objects needed for WebSocket broadcasting.
     result = knowledge_extraction_service.extract_and_apply(
         context=context,
         context_manager=context_manager,
@@ -190,7 +200,12 @@ def _extraction_result_payload(
     session_id: str,
     result: ExtractionResult,
 ) -> dict[str, object]:
-    """Create a compact status payload for realtime extraction attempts."""
+    """Create a compact status payload for realtime extraction attempts.
+
+    This payload is attached to the ASR/OCR event that triggered extraction.
+    It is intentionally summary-shaped: frontend state should still be updated
+    from the separate internal knowledge event, not by parsing this field.
+    """
     return {
         "session_id": session_id,
         "provider": knowledge_extraction_service.extractor.provider_name,
@@ -217,7 +232,12 @@ async def _broadcast_event_received(
     graph_patch: dict[str, object] | None,
     knowledge_extraction: dict[str, object] | None = None,
 ) -> None:
-    """Broadcast the standard event.received envelope."""
+    """Broadcast the standard event.received envelope.
+
+    Both external input events and internally generated knowledge events use
+    this helper. Keeping one envelope builder protects the frontend contract
+    from small drift between "real" and internal events.
+    """
     data = {
         "event_type": event.event_type,
         "payload": event.payload,
@@ -239,14 +259,24 @@ async def _broadcast_event_received(
 
 
 async def _broadcast_internal_extractions(result: ExtractionResult) -> None:
-    """Broadcast each applied internal extraction as a normal knowledge event."""
+    """Broadcast each applied internal extraction as a normal knowledge event.
+
+    The extractor has already mutated context and graph through the service.
+    Here we only replay the resulting update objects over WebSocket so connected
+    dashboards can show the new timeline item and graph patch immediately.
+    """
     for item in result.applied:
+        # Reconstruct a RealtimeEvent for the payload shape only. We do not send
+        # it through managers again, because that would duplicate the extraction
+        # in context and could create redundant graph updates.
         event = RealtimeEvent(
             session_id=item.extraction.session_id,
             event_type="knowledge.extraction",
             payload=item.extraction.model_dump(),
         )
         update = item.context_update
+        # Use post-extraction counts for the internal event. This mirrors a
+        # direct POST /events knowledge.extraction response.
         event_count = (
             update.transcript_count
             + update.visual_count

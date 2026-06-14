@@ -11,6 +11,13 @@ from backend.app.models import RealtimeEvent, StartSessionRequest
 
 
 class FakeWebSocket:
+    """Small WebSocket stand-in that captures broadcast payloads.
+
+    The realtime extraction behavior is mostly about WebSocket ordering and
+    payload shape, so this fake keeps the test at manager/API level without
+    needing a FastAPI TestClient.
+    """
+
     def __init__(self) -> None:
         self.accepted = False
         self.sent_payloads: list[dict] = []
@@ -47,6 +54,7 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
         websocket_manager.clear()
 
     async def test_third_transcript_segment_broadcasts_internal_extraction(self) -> None:
+        """The third final segment should trigger a separate graph update."""
         texts = [
             "采样定理是通信系统的重要概念。",
             "卷积方法可以分析线性系统。",
@@ -71,6 +79,8 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
             for payload in self.socket.sent_payloads
             if payload["type"] == "event.received"
         ]
+        # The triggering transcript remains visible first; the internally
+        # generated knowledge event follows as its own event.received message.
         self.assertEqual(
             event_types,
             [
@@ -82,10 +92,12 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
         )
 
         third_payload = self.socket.sent_payloads[2]["data"]
+        # The triggering transcript carries only the extraction summary.
         self.assertIn("knowledge_extraction", third_payload)
         self.assertEqual(third_payload["knowledge_extraction"]["extraction_count"], 1)
 
         extraction_payload = self.socket.sent_payloads[3]["data"]
+        # The following internal event carries the actual graph patch.
         self.assertIsNotNone(extraction_payload["graph_patch"])
         self.assertEqual(
             extraction_payload["context_update"]["knowledge_extraction_count"],
