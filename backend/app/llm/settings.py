@@ -71,7 +71,7 @@ def _default_model(provider: str) -> str:
     if provider == "openai":
         return "gpt-4o-mini"
     if provider == "deepseek":
-        return "deepseek-chat"
+        return "deepseek-v4-flash"
     if provider == "local":
         return "llama3.1"
     return "chat"
@@ -82,10 +82,10 @@ def _default_base_url(provider: str) -> str:
     if provider == "openai":
         return "https://api.openai.com/v1"
     if provider == "deepseek":
-        return "https://api.deepseek.com/v1"
+        return "https://api.deepseek.com"
     if provider == "local":
         return "http://127.0.0.1:11434/v1"
-    return "https://api.deepseek.com/v1"
+    return "https://api.deepseek.com"
 
 
 def _float_env(name: str, default: float) -> float:

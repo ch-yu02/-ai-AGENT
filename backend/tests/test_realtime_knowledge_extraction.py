@@ -133,6 +133,46 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
             1,
         )
 
+    async def test_transcript_can_skip_realtime_extraction_for_notes_pipeline(self) -> None:
+        """WhisperLive notes pipeline posts subtitles first and extracts graph later."""
+        texts = [
+            "采样定理是通信系统的重要概念。",
+            "卷积方法可以分析线性系统。",
+            "傅里叶变换可以把时域信号转换到频域。",
+        ]
+        for index, text in enumerate(texts, start=1):
+            await events_api.receive_event(
+                RealtimeEvent(
+                    session_id=self.session_id,
+                    event_type="transcript.segment",
+                    payload={
+                        "segment_id": f"seg_skip_{index:03d}",
+                        "start_ts": float(index),
+                        "end_ts": float(index + 1),
+                        "text": text,
+                        "skip_realtime_extraction": True,
+                    },
+                )
+            )
+
+        event_types = [
+            payload["data"]["event_type"]
+            for payload in self.socket.sent_payloads
+            if payload["type"] == "event.received"
+        ]
+        self.assertEqual(
+            event_types,
+            [
+                "transcript.segment",
+                "transcript.segment",
+                "transcript.segment",
+            ],
+        )
+        self.assertEqual(
+            context_manager.get_context(self.session_id).knowledge_extractions,
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

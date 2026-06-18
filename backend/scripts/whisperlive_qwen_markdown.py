@@ -7,7 +7,9 @@ This script is intentionally offline after model downloads:
 3. Collect completed WhisperLive transcript segments.
 4. Ask local OpenVINO Qwen on CPU to periodically turn accumulated subtitles
    into classroom notes.
-5. Keep updating one Markdown file under ``data/whisperlive_markdown`` by default.
+5. Keep updating one Markdown file. With ``--session-id`` it is saved as
+   ``data/sessions/{session_id}/structured_notes.md``; without a session it
+   falls back to ``data/whisperlive_markdown`` for offline smoke tests.
 
 No cloud LLM or EDU-Mate ``/events`` calls are made in this smoke path.
 """
@@ -15,6 +17,7 @@ No cloud LLM or EDU-Mate ``/events`` calls are made in this smoke path.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import queue
@@ -34,13 +37,16 @@ ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
+from backend.app import prompts as prompt_templates
 from backend.scripts.local_audio_stream_sender import (
     DEFAULT_OPENVINO_ROOT,
     DEFAULT_QWEN_MODEL,
     MEDIA_EXTENSIONS,
     SAMPLE_RATE,
     parse_json_object,
+    post_json,
     result_text,
+    send_event,
     sequence_coverage,
     transcript_compare_key,
 )
@@ -54,6 +60,7 @@ DEFAULT_WHISPERLIVE_MODEL = os.getenv(
 )
 DEFAULT_INPUT = DEFAULT_OPENVINO_ROOT / "test_video"
 DEFAULT_OUTPUT_DIR = Path("data/whisperlive_markdown")
+DEFAULT_SESSIONS_DIR = Path("data/sessions")
 
 
 @dataclass(frozen=True)
@@ -77,9 +84,265 @@ class MarkdownResult:
     clean_transcript: list[str]
 
 
+@dataclass(frozen=True)
+class BackendSyncTask:
+    """One asynchronous backend sync task."""
+
+    kind: str
+    payload: dict[str, Any]
+
+
 def log(message: str) -> None:
     """Print one timestamped log line."""
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {message}", flush=True)
+
+
+def markdown_result_counts(result: MarkdownResult) -> dict[str, int]:
+    """Return compact counts for Qwen Markdown diagnostics."""
+    return {
+        "summary": len(result.summary),
+        "sections": len(result.sections),
+        "bullets": sum(len(bullets) for _, bullets in result.sections),
+        "keywords": len(result.keywords),
+        "clean_transcript": len(result.clean_transcript),
+    }
+
+
+def format_markdown_result_counts(result: MarkdownResult) -> str:
+    """Format MarkdownResult counts as one log-friendly string."""
+    counts = markdown_result_counts(result)
+    return (
+        f"summary={counts['summary']} sections={counts['sections']} "
+        f"bullets={counts['bullets']} keywords={counts['keywords']} "
+        f"clean_transcript={counts['clean_transcript']}"
+    )
+
+
+def whisperlive_segment_id(segment: WhisperLiveSegment) -> str:
+    """Create a stable transcript.segment ID for a WhisperLive segment."""
+    start = int(round(segment.start * 1000))
+    end = int(round(segment.end * 1000))
+    digest = hashlib.sha1(  # noqa: S324 - stable local id, not security.
+        f"{segment.start:.3f}|{segment.end:.3f}|{segment.text}".encode("utf-8")
+    ).hexdigest()[:8]
+    return f"seg_whisperlive_{start}_{end}_{digest}"
+
+
+def transcript_payload(segment: WhisperLiveSegment) -> dict[str, Any]:
+    """Convert one WhisperLive segment to the existing transcript.segment payload."""
+    return {
+        "segment_id": whisperlive_segment_id(segment),
+        "start_ts": segment.start,
+        "end_ts": segment.end,
+        "text": segment.text,
+        "speaker": "teacher",
+        "confidence": None,
+        "is_final": bool(segment.completed),
+        "source": "whisperlive_openvino",
+        "skip_realtime_extraction": True,
+    }
+
+
+def source_segment_payloads(segments: list[WhisperLiveSegment]) -> list[dict[str, Any]]:
+    """Build source segment objects for notes-driven graph extraction."""
+    return [
+        {
+            "segment_id": whisperlive_segment_id(segment),
+            "start_ts": segment.start,
+            "end_ts": segment.end,
+            "text": segment.text,
+        }
+        for segment in segments
+        if segment.text.strip()
+    ]
+
+
+class BackendSyncer:
+    """Asynchronously sync WhisperLive transcripts and Markdown notes to EDU-Mate."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        session_id: str,
+        http_timeout: float,
+        post_transcript: bool,
+        enable_cloud_graph: bool,
+        graph_update_every_seconds: float,
+    ) -> None:
+        self.base_url = base_url
+        self.session_id = session_id
+        self.http_timeout = http_timeout
+        self.post_transcript = post_transcript
+        self.enable_cloud_graph = enable_cloud_graph
+        self.graph_update_every_seconds = graph_update_every_seconds
+        self._transcript_queue: queue.Queue[BackendSyncTask | None] = queue.Queue()
+        self._notes_queue: queue.Queue[BackendSyncTask | None] = queue.Queue()
+        self._transcript_thread: threading.Thread | None = None
+        self._notes_thread: threading.Thread | None = None
+        self._posted_transcript_ids: set[str] = set()
+        self._posted_markdown_hashes: set[str] = set()
+        self._last_graph_update_at = 0.0
+        self.transcript_post_count = 0
+        self.notes_post_count = 0
+
+    @property
+    def enabled(self) -> bool:
+        """Return true when any backend sync behavior is enabled."""
+        return bool(self.session_id and (self.post_transcript or self.enable_cloud_graph))
+
+    def start(self) -> None:
+        """Start the worker thread when backend sync is enabled."""
+        if not self.enabled:
+            return
+        if self.post_transcript and self._transcript_thread is None:
+            self._transcript_thread = threading.Thread(
+                target=self._run_queue,
+                args=("transcript", self._transcript_queue),
+                daemon=True,
+            )
+            self._transcript_thread.start()
+        if self.enable_cloud_graph and self._notes_thread is None:
+            self._notes_thread = threading.Thread(
+                target=self._run_queue,
+                args=("notes", self._notes_queue),
+                daemon=True,
+            )
+            self._notes_thread.start()
+
+    def stop(self) -> None:
+        """Drain queued sync tasks and stop the worker."""
+        if self._transcript_thread is not None:
+            self._transcript_queue.join()
+            self._transcript_queue.put(None)
+            self._transcript_thread.join(timeout=10.0)
+            self._transcript_thread = None
+        if self._notes_thread is not None:
+            self._notes_queue.join()
+            self._notes_queue.put(None)
+            self._notes_thread.join(timeout=10.0)
+            self._notes_thread = None
+
+    def enqueue_transcript(self, segment: WhisperLiveSegment) -> None:
+        """Queue a final transcript segment for ``POST /events``."""
+        if not self.enabled or not self.post_transcript or not segment.completed:
+            return
+        payload = transcript_payload(segment)
+        segment_id = str(payload["segment_id"])
+        if segment_id in self._posted_transcript_ids:
+            return
+        self._posted_transcript_ids.add(segment_id)
+        self._transcript_queue.put(BackendSyncTask(kind="transcript", payload=payload))
+
+    def enqueue_notes_update(
+        self,
+        markdown: str,
+        segments: list[WhisperLiveSegment],
+        update_status: str,
+        sequence: int,
+        output_path: Path,
+        recent_segments: list[WhisperLiveSegment] | None = None,
+    ) -> None:
+        """Queue one Markdown notes snapshot for cloud graph extraction."""
+        if not self.enabled or not self.enable_cloud_graph:
+            return
+        markdown_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+        if markdown_hash in self._posted_markdown_hashes:
+            log(f"Skip duplicate notes snapshot hash={markdown_hash[:10]}")
+            return
+
+        now = time.monotonic()
+        should_throttle = (
+            update_status != "final"
+            and self.graph_update_every_seconds > 0
+            and self._last_graph_update_at > 0
+            and now - self._last_graph_update_at < self.graph_update_every_seconds
+        )
+        if should_throttle:
+            wait_left = self.graph_update_every_seconds - (now - self._last_graph_update_at)
+            log(
+                "Throttle notes graph update "
+                f"seq={sequence} status={update_status}; "
+                f"wait_left={max(0.0, wait_left):.1f}s"
+            )
+            return
+
+        self._posted_markdown_hashes.add(markdown_hash)
+        self._last_graph_update_at = now
+        snapshot_id = f"notes_{sequence:06d}_{update_status}"
+        focused_segments = recent_segments or segments
+        log(
+            "Queue notes graph update "
+            f"{snapshot_id}: markdown_chars={len(markdown)} "
+            f"source_segments={len(segments)} recent_segments={len(focused_segments)}"
+        )
+        self._notes_queue.put(
+            BackendSyncTask(
+                kind="notes",
+                payload={
+                    "session_id": self.session_id,
+                    "snapshot_id": snapshot_id,
+                    "sequence": sequence,
+                    "markdown": markdown,
+                    "markdown_hash": markdown_hash,
+                    "source_segments": source_segment_payloads(segments),
+                    "recent_source_segments": source_segment_payloads(focused_segments),
+                    "update_status": update_status,
+                    "output_path": str(output_path),
+                },
+            )
+        )
+
+    def _run_queue(
+        self,
+        worker_name: str,
+        task_queue: queue.Queue[BackendSyncTask | None],
+    ) -> None:
+        while True:
+            task = task_queue.get()
+            try:
+                if task is None:
+                    return
+                if task.kind == "transcript":
+                    self._post_transcript(task.payload)
+                elif task.kind == "notes":
+                    self._post_notes(task.payload)
+            except Exception as exc:  # noqa: BLE001
+                log(f"Backend sync {worker_name} failed: {exc}")
+                if task and task.kind == "notes":
+                    self._posted_markdown_hashes.discard(str(task.payload.get("markdown_hash", "")))
+                if task and task.kind == "transcript":
+                    self._posted_transcript_ids.discard(str(task.payload.get("segment_id", "")))
+            finally:
+                task_queue.task_done()
+
+    def _post_transcript(self, payload: dict[str, Any]) -> None:
+        send_event(
+            base_url=self.base_url,
+            session_id=self.session_id,
+            event_type="transcript.segment",
+            payload=payload,
+            timeout=self.http_timeout,
+        )
+        self.transcript_post_count += 1
+
+    def _post_notes(self, payload: dict[str, Any]) -> None:
+        started_at = time.monotonic()
+        response = post_json(
+            self.base_url,
+            "/agent/knowledge-tree/update-from-notes",
+            {key: value for key, value in payload.items() if key != "output_path"},
+            timeout=self.http_timeout,
+        )
+        elapsed = time.monotonic() - started_at
+        self.notes_post_count += 1
+        warnings = response.get("warnings") or []
+        log(
+            "POST notes snapshot "
+            f"{payload['snapshot_id']} from {payload['output_path']} -> "
+            f"{response.get('status')} ops={response.get('graph_patch_operations', 0)} "
+            f"elapsed={elapsed:.2f}s warnings={warnings}"
+        )
 
 
 def find_media(path: Path) -> Path:
@@ -186,6 +449,7 @@ class WhisperLiveFileClient:
         no_speech_thresh: float,
         same_output_threshold: int,
         connect_timeout: float,
+        on_completed_segment: Callable[[WhisperLiveSegment], None] | None = None,
     ) -> None:
         try:
             import websocket  # noqa: PLC0415
@@ -210,6 +474,7 @@ class WhisperLiveFileClient:
         self._seen_completed: set[tuple[str, str, str]] = set()
         self._receiver_error: Exception | None = None
         self._receiver_stop = threading.Event()
+        self.on_completed_segment = on_completed_segment
 
     def transcribe_file(
         self,
@@ -295,6 +560,7 @@ class WhisperLiveFileClient:
                 self._remember_segment(segment)
 
     def _remember_segment(self, segment: WhisperLiveSegment) -> None:
+        completed_to_notify: WhisperLiveSegment | None = None
         with self._segments_lock:
             if segment.completed:
                 key = (f"{segment.start:.3f}", f"{segment.end:.3f}", segment.text)
@@ -302,16 +568,14 @@ class WhisperLiveFileClient:
                     return
                 self._seen_completed.add(key)
                 self.segments.append(segment)
-                log(
-                    f"WhisperLive completed "
-                    f"{segment.start:.2f}-{segment.end:.2f}: {segment.text}"
-                )
-                return
-
-            if not self.segments or self.segments[-1].completed:
+                completed_to_notify = segment
+            elif not self.segments or self.segments[-1].completed:
                 self.segments.append(segment)
             else:
                 self.segments[-1] = segment
+
+        if completed_to_notify is not None and self.on_completed_segment is not None:
+            self.on_completed_segment(completed_to_notify)
 
     def _wait_for_ready(self) -> None:
         deadline = time.time() + self.connect_timeout
@@ -467,11 +731,14 @@ class QwenMarkdownPolisher:
                 log(f"Qwen markdown JSON parse failed after repair: {exc}; using fallback")
                 return fallback_markdown_result(segments)
         result = normalize_markdown_result(payload, segments)
-        return enforce_markdown_grounding(
+        log(f"Qwen markdown raw counts: {format_markdown_result_counts(result)}")
+        grounded = enforce_markdown_grounding(
             result,
             segments=segments,
             domain_terms=domain_terms,
         )
+        log(f"Qwen markdown grounded counts: {format_markdown_result_counts(grounded)}")
+        return grounded
 
 
 def build_markdown_prompt(
@@ -480,57 +747,22 @@ def build_markdown_prompt(
     domain_terms: list[str],
 ) -> str:
     """Build a strict JSON prompt for Qwen markdown cleanup."""
-    transcript = "\n".join(
-        f"- [{segment.start:.2f}-{segment.end:.2f}] {segment.text}"
-        for segment in segments
-    )
-    terms = "、".join(domain_terms)
-    return (
-        "你是一个课堂语音转录助手兼课堂笔记整理助手。"
-        "系统会每隔一段时间把当前累计的 WhisperLive 字幕发给你，"
-        "请把它整理成会持续更新的课堂笔记，用于记录课堂内容、重点、概念和老师强调的备考信息。"
-        "请只根据给定字幕做保守整理：补充标点、修正明显错别字、合并重复片段，"
-        "并生成结构化 Markdown 所需 JSON。\n"
-        "严格限制：不得扩写，不得添加字幕中没有的信息，不得编造例子；"
-        "即使你知道相关背景知识，也不能把字幕没有说出的内容写进笔记。"
-        "如果内容不足，就保持简短。\n"
-        "整理目标：像认真听课的学生记笔记一样，优先保留课堂主线、知识点、定义、"
-        "因果关系、老师强调的重点和可复习的条目；不要写成宣传文案或总结报告。\n"
-        "可选课程关键词如下；如果未提供关键词，就只能依据字幕上下文做通用纠错："
-        f"{terms or '未提供'}。\n"
-        "Few-shot 校准规则：\n"
-        "- 当课程关键词与 Whisper 字幕存在明显同音、近音、漏字或错字关系，"
-        "并且上下文支持时，可把字幕修正为课程关键词。例如关键词“线性代数”，"
-        "字幕“线形代数”可修正为“线性代数”。\n"
-        "- 当关键词“薛定谔方程”与字幕“学定额方程”在发音和上下文上明显对应，"
-        "可修正为“薛定谔方程”。\n"
-        "- 当没有关键词支持，或候选修正会改变原意时，保持原字幕含义，不要猜测。\n"
-        "这些保守修正规则必须同时应用到 title、summary、sections、keywords、clean_transcript。\n"
-        "每个 summary 条目、section bullet、clean_transcript 句子都必须能在原始字幕中找到直接依据。\n"
-        "只输出一个 JSON object，不要 Markdown，不要解释。\n"
-        "JSON schema:\n"
-        "{\n"
-        '  "title": "简短标题",\n'
-        '  "summary": ["要点1", "要点2"],\n'
-        '  "sections": [{"heading": "小节标题", "bullets": ["条目"]}],\n'
-        '  "keywords": ["关键词"],\n'
-        '  "clean_transcript": ["润色后的逐句字幕"]\n'
-        "}\n\n"
-        "WhisperLive 字幕:\n"
-        f"{transcript}\n\n"
-        "JSON:"
+    return prompt_templates.qwen_markdown_notes_prompt(
+        segments=[
+            {
+                "start": segment.start,
+                "end": segment.end,
+                "text": segment.text,
+            }
+            for segment in segments
+        ],
+        domain_terms=domain_terms,
     )
 
 
 def build_markdown_repair_prompt(raw_text: str) -> str:
     """Ask Qwen to repair malformed markdown JSON."""
-    return (
-        "下面文本本应是课堂笔记 JSON，但格式不合法。"
-        "请只输出合法 JSON object，不要解释，不要 Markdown。"
-        "必须包含 title、summary、sections、keywords、clean_transcript 字段。\n\n"
-        f"原始文本:\n{raw_text}\n\n"
-        "合法 JSON:"
-    )
+    return prompt_templates.qwen_markdown_notes_repair_prompt(raw_text)
 
 
 def normalize_markdown_result(
@@ -641,6 +873,66 @@ def filter_grounded_list(
     ]
 
 
+def is_plausible_polished_transcript(
+    text: str,
+    *,
+    transcript_key: str,
+    domain_terms: list[str],
+) -> bool:
+    """Allow stronger ASR typo correction while still blocking hallucinated subtitles."""
+    item_key = transcript_compare_key(text)
+    if not item_key or not transcript_key:
+        return False
+    if item_key in transcript_key:
+        return True
+    if len(item_key) <= 3:
+        return False
+    if len(item_key) > max(len(transcript_key) + 12, int(len(transcript_key) * 1.12)):
+        return False
+
+    stripped_key = item_key
+    for term in domain_terms:
+        term_key = transcript_compare_key(term)
+        if term_key and term_key in stripped_key:
+            stripped_key = stripped_key.replace(term_key, "")
+    if not stripped_key:
+        return True
+
+    matched = matched_character_count(stripped_key, transcript_key)
+    coverage = matched / max(1, len(stripped_key))
+    unmatched = len(stripped_key) - matched
+    # clean_transcript may legitimately replace several homophone characters
+    # in one sentence, so keep this looser than summary/section grounding.
+    return coverage >= 0.45 and unmatched <= max(8, int(len(stripped_key) * 0.45))
+
+
+def filter_grounded_clean_transcript(
+    values: list[str],
+    *,
+    transcript_key: str,
+    domain_terms: list[str],
+) -> list[str]:
+    """Keep polished subtitle lines, allowing larger ASR typo corrections."""
+    accepted: list[str] = []
+    seen: set[str] = set()
+    for item in values:
+        text = clean_scalar(item)
+        if not text or text in seen:
+            continue
+        if is_grounded_note_item(
+            text,
+            transcript_key=transcript_key,
+            domain_terms=domain_terms,
+        ) or is_plausible_polished_transcript(
+            text,
+            transcript_key=transcript_key,
+            domain_terms=domain_terms,
+        ):
+            accepted.append(text)
+            seen.add(text)
+    return accepted
+
+
 def enforce_markdown_grounding(
     result: MarkdownResult,
     *,
@@ -661,7 +953,7 @@ def enforce_markdown_grounding(
         transcript_key=transcript_key,
         domain_terms=domain_terms,
     )
-    clean_transcript = filter_grounded_list(
+    clean_transcript = filter_grounded_clean_transcript(
         result.clean_transcript,
         transcript_key=transcript_key,
         domain_terms=domain_terms,
@@ -732,12 +1024,38 @@ def render_markdown(
     return "\n".join(lines)
 
 
-def make_markdown_output_path(output_dir: Path, input_path: Path) -> Path:
+def make_markdown_output_path(
+    output_dir: Path,
+    input_path: Path,
+    *,
+    session_id: str = "",
+    sessions_dir: Path = DEFAULT_SESSIONS_DIR,
+) -> Path:
     """Build a stable output path for one streaming notes document."""
+    if session_id.strip():
+        return session_structured_notes_path(
+            session_id.strip(),
+            sessions_dir=sessions_dir,
+        )
+
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", input_path.stem).strip("_")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return output_dir / f"{timestamp}_{stem or 'audio'}_notes.md"
+
+
+def session_structured_notes_path(session_id: str, *, sessions_dir: Path) -> Path:
+    """Return the structured notes path inside one safe classroom session dir."""
+    if not re.fullmatch(r"[0-9A-Za-z_\-]+", session_id):
+        raise ValueError(f"Unsafe session_id for notes output: {session_id}")
+
+    root = sessions_dir.resolve()
+    session_dir = (root / session_id).resolve()
+    if not session_dir.is_relative_to(root):
+        raise ValueError(f"Unsafe session_id path: {session_id}")
+
+    session_dir.mkdir(parents=True, exist_ok=True)
+    return session_dir / "structured_notes.md"
 
 
 def write_markdown(
@@ -769,6 +1087,19 @@ class PeriodicMarkdownUpdater:
         max_new_tokens: int,
         update_every_seconds: float,
         min_update_segments: int,
+        subtitle_update_every_seconds: float = 0.0,
+        on_markdown_update: Callable[
+            [
+                str,
+                list[WhisperLiveSegment],
+                str,
+                int,
+                Path,
+                list[WhisperLiveSegment],
+            ],
+            None,
+        ]
+        | None = None,
     ) -> None:
         self.qwen_factory = qwen_factory
         self.snapshot_segments = snapshot_segments
@@ -779,15 +1110,19 @@ class PeriodicMarkdownUpdater:
         self.max_new_tokens = max_new_tokens
         self.update_every_seconds = update_every_seconds
         self.min_update_segments = min_update_segments
+        self.subtitle_update_every_seconds = subtitle_update_every_seconds
+        self.on_markdown_update = on_markdown_update
         self._qwen: QwenMarkdownPolisher | None = None
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
         self._last_fingerprint: tuple[tuple[float, float, str], ...] = ()
+        self._last_subtitle_fingerprint: tuple[tuple[float, float, str], ...] = ()
+        self._latest_qwen_result: MarkdownResult | None = None
         self.update_count = 0
 
     def start(self) -> None:
         """Start background periodic updates when enabled."""
-        if self.update_every_seconds <= 0:
+        if self.update_every_seconds <= 0 and self.subtitle_update_every_seconds <= 0:
             return
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -817,6 +1152,7 @@ class PeriodicMarkdownUpdater:
         fingerprint = self._fingerprint(segments)
         if not final and fingerprint == self._last_fingerprint:
             return None
+        recent_segments = self._recent_segments_for_update(segments)
         self._last_fingerprint = fingerprint
 
         if self._qwen is None:
@@ -826,6 +1162,7 @@ class PeriodicMarkdownUpdater:
             max_new_tokens=self.max_new_tokens,
             domain_terms=self.domain_terms,
         )
+        self._latest_qwen_result = result
         markdown = render_markdown(
             result,
             source_file=self.input_path,
@@ -840,16 +1177,74 @@ class PeriodicMarkdownUpdater:
             output_path=self.output_path,
         )
         self.update_count += 1
+        update_status = "final" if final else "streaming"
         log(
-            f"Wrote {'final' if final else 'streaming'} Markdown update "
+            f"Wrote {update_status} Markdown update "
             f"#{self.update_count} from {len(segments)} segment(s): {output_path}"
+        )
+        if self.on_markdown_update is not None:
+            self.on_markdown_update(
+                markdown,
+                segments,
+                update_status,
+                self.update_count,
+                output_path,
+                recent_segments,
+            )
+        return output_path
+
+    def write_subtitle_snapshot(self, segments: list[WhisperLiveSegment]) -> Path | None:
+        """Refresh the Markdown transcript section without invoking Qwen or the graph."""
+        if not segments:
+            return None
+        fingerprint = self._fingerprint(segments)
+        if fingerprint == self._last_subtitle_fingerprint:
+            return None
+        self._last_subtitle_fingerprint = fingerprint
+        result = self._latest_qwen_result or fallback_markdown_result(segments)
+        markdown = render_markdown(
+            result,
+            source_file=self.input_path,
+            whisper_model=self.whisper_model,
+            segments=segments,
+            update_status="streaming",
+        )
+        output_path = write_markdown(
+            markdown,
+            output_dir=self.output_path.parent,
+            input_path=self.input_path,
+            output_path=self.output_path,
+        )
+        log(
+            "Wrote streaming subtitle Markdown snapshot "
+            f"from {len(segments)} segment(s); "
+            f"qwen_notes={'ready' if self._latest_qwen_result else 'pending'}: {output_path}"
         )
         return output_path
 
     def _run(self) -> None:
-        while not self._stop_event.wait(self.update_every_seconds):
+        next_qwen_update_at = time.monotonic() + max(0.0, self.update_every_seconds)
+        next_subtitle_update_at = time.monotonic()
+        while not self._stop_event.wait(1.0):
             try:
-                self.write_update(self.snapshot_segments(), final=False)
+                now = time.monotonic()
+                segments = self.snapshot_segments()
+                if (
+                    self.subtitle_update_every_seconds > 0
+                    and now >= next_subtitle_update_at
+                ):
+                    self.write_subtitle_snapshot(segments)
+                    next_subtitle_update_at = now + self.subtitle_update_every_seconds
+
+                first_qwen_update = self._last_fingerprint == ()
+                qwen_due = (
+                    self.update_every_seconds > 0
+                    and len(segments) >= self.min_update_segments
+                    and (first_qwen_update or now >= next_qwen_update_at)
+                )
+                if qwen_due:
+                    self.write_update(segments, final=False)
+                    next_qwen_update_at = time.monotonic() + self.update_every_seconds
             except Exception as exc:  # noqa: BLE001
                 log(f"Markdown periodic update failed: {exc}")
 
@@ -858,6 +1253,21 @@ class PeriodicMarkdownUpdater:
         segments: list[WhisperLiveSegment],
     ) -> tuple[tuple[float, float, str], ...]:
         return tuple((round(item.start, 2), round(item.end, 2), item.text) for item in segments)
+
+    def _recent_segments_for_update(
+        self,
+        segments: list[WhisperLiveSegment],
+    ) -> list[WhisperLiveSegment]:
+        """Return the new subtitle window since the previous Qwen notes update."""
+        previous = set(self._last_fingerprint)
+        recent = [
+            segment
+            for segment in segments
+            if (round(segment.start, 2), round(segment.end, 2), segment.text) not in previous
+        ]
+        if recent:
+            return recent[-max(5, self.min_update_segments) :]
+        return segments[-max(5, self.min_update_segments) :]
 
 
 def clean_scalar(value: object) -> str:
@@ -898,7 +1308,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--server", default=DEFAULT_WHISPERLIVE_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_WHISPERLIVE_PORT)
     parser.add_argument("--input", default=str(DEFAULT_INPUT), help="Audio file or directory.")
-    parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR))
+    parser.add_argument(
+        "--output-dir",
+        default=str(DEFAULT_OUTPUT_DIR),
+        help=(
+            "Fallback Markdown output directory when --session-id is not provided. "
+            "Session runs save to data/sessions/{session_id}/structured_notes.md."
+        ),
+    )
+    parser.add_argument(
+        "--sessions-dir",
+        default=str(DEFAULT_SESSIONS_DIR),
+        help="Base directory for session-scoped Markdown output.",
+    )
+    parser.add_argument("--backend-url", default=os.getenv("BACKEND_URL", "http://127.0.0.1:8000"))
+    parser.add_argument(
+        "--session-id",
+        default="",
+        help="Existing frontend-created session_id for backend transcript/graph sync.",
+    )
     parser.add_argument("--whisperlive-model", default=DEFAULT_WHISPERLIVE_MODEL)
     parser.add_argument("--language", default="<|zh|>")
     parser.add_argument("--max-audio-seconds", type=float, default=120.0)
@@ -913,7 +1341,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         "--update-every-seconds",
         type=float,
         default=30.0,
-        help="Regenerate the same Markdown notes file every N seconds. Use 0 for final-only.",
+        help="Regenerate Qwen structured Markdown notes every N seconds. Use 0 for final-only.",
+    )
+    parser.add_argument(
+        "--subtitle-update-every-seconds",
+        type=float,
+        default=5.0,
+        help=(
+            "Refresh Markdown transcript snapshots every N seconds without invoking "
+            "Qwen or cloud graph extraction. Use 0 to disable."
+        ),
     )
     parser.add_argument(
         "--min-update-segments",
@@ -921,6 +1358,23 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=2,
         help="Minimum completed transcript segments required for a streaming Markdown update.",
     )
+    parser.add_argument(
+        "--post-transcript",
+        action="store_true",
+        help="POST completed WhisperLive transcript.segment events to the backend.",
+    )
+    parser.add_argument(
+        "--enable-cloud-graph",
+        action="store_true",
+        help="POST Markdown note snapshots to the backend cloud knowledge-tree agent.",
+    )
+    parser.add_argument(
+        "--graph-update-every-seconds",
+        type=float,
+        default=60.0,
+        help="Minimum interval between streaming Markdown graph updates. Final updates always send.",
+    )
+    parser.add_argument("--http-timeout", type=float, default=30.0)
     parser.add_argument(
         "--domain-terms",
         default=os.getenv("DOMAIN_TERMS", ""),
@@ -940,6 +1394,27 @@ def main(argv: list[str] | None = None) -> int:
     log(f"Input media: {input_path}")
     log(f"WhisperLive server: {args.server}:{args.port}")
     log(f"WhisperLive model: {args.whisperlive_model}")
+    sync_enabled = bool(args.post_transcript or args.enable_cloud_graph)
+    if sync_enabled and not args.session_id.strip():
+        raise ValueError(
+            "--session-id is required when --post-transcript or --enable-cloud-graph is used"
+        )
+    post_transcript = bool(args.post_transcript or args.enable_cloud_graph)
+    syncer = BackendSyncer(
+        base_url=args.backend_url,
+        session_id=args.session_id.strip(),
+        http_timeout=args.http_timeout,
+        post_transcript=post_transcript,
+        enable_cloud_graph=bool(args.enable_cloud_graph),
+        graph_update_every_seconds=args.graph_update_every_seconds,
+    )
+    syncer.start()
+    if syncer.enabled:
+        log(
+            "Backend sync enabled: "
+            f"transcript={post_transcript}, cloud_graph={args.enable_cloud_graph}, "
+            f"url={args.backend_url}, session={args.session_id.strip()}"
+        )
     client = WhisperLiveFileClient(
         host=args.server,
         port=args.port,
@@ -950,8 +1425,14 @@ def main(argv: list[str] | None = None) -> int:
         no_speech_thresh=args.no_speech_thresh,
         same_output_threshold=args.same_output_threshold,
         connect_timeout=args.connect_timeout,
+        on_completed_segment=syncer.enqueue_transcript,
     )
-    output_path = make_markdown_output_path(Path(args.output_dir), input_path)
+    output_path = make_markdown_output_path(
+        Path(args.output_dir),
+        input_path,
+        session_id=args.session_id.strip(),
+        sessions_dir=Path(args.sessions_dir),
+    )
     domain_terms = parse_domain_terms(args.domain_terms)
     updater = PeriodicMarkdownUpdater(
         qwen_factory=lambda: QwenMarkdownPolisher(
@@ -966,10 +1447,21 @@ def main(argv: list[str] | None = None) -> int:
         max_new_tokens=args.qwen_tokens,
         update_every_seconds=args.update_every_seconds,
         min_update_segments=max(1, args.min_update_segments),
+        subtitle_update_every_seconds=max(0.0, args.subtitle_update_every_seconds),
+        on_markdown_update=syncer.enqueue_notes_update,
     )
     log(f"Markdown output: {output_path}")
     if args.update_every_seconds > 0:
-        log(f"Markdown updates every {args.update_every_seconds:.1f}s")
+        log(
+            "Qwen structured Markdown updates immediately after "
+            f"{max(1, args.min_update_segments)} segment(s), then every "
+            f"{args.update_every_seconds:.1f}s"
+        )
+    if args.subtitle_update_every_seconds > 0:
+        log(
+            "Subtitle Markdown snapshots every "
+            f"{args.subtitle_update_every_seconds:.1f}s between Qwen notes updates"
+        )
 
     segments: list[WhisperLiveSegment] = []
     updater.start()
@@ -983,15 +1475,24 @@ def main(argv: list[str] | None = None) -> int:
         )
     except Exception:
         updater.stop()
+        syncer.stop()
         raise
     if not segments:
         updater.stop()
+        syncer.stop()
         raise RuntimeError("WhisperLive returned no transcript segments")
 
     log(f"Collected {len(segments)} transcript segment(s)")
     final_output_path = updater.stop_and_flush(segments)
     if final_output_path:
         log(f"Final Markdown ready: {final_output_path}")
+    syncer.stop()
+    if syncer.enabled:
+        log(
+            "Backend sync finished: "
+            f"transcripts={syncer.transcript_post_count}, "
+            f"notes={syncer.notes_post_count}"
+        )
     return 0
 
 

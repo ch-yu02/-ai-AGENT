@@ -241,7 +241,11 @@ class GlobalSearchService:
                     course=detail.session.course,
                     document=document,
                 )
-                for document in build_session_documents(context, detail.knowledge_graph)
+                for document in build_session_documents(
+                    context,
+                    detail.knowledge_graph,
+                    structured_notes_markdown=detail.structured_notes_markdown,
+                )
             ]
             for document in session_documents:
                 documents.append(document)

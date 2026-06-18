@@ -26,8 +26,14 @@ AgentAnswerMode = Literal["strict", "grounded"]
 ResolvedAgentIntent = Literal["qa", "summary", "todos", "quiz"]
 """后端最终执行的技能类型，不包含 ``auto``。"""
 
-SourceRefType = Literal["segment", "visual", "knowledge_node", "timeline"]
+SourceRefType = Literal["segment", "visual", "knowledge_node", "structured_note", "timeline"]
 """来源引用类型，对应课堂素材中的字幕、视觉内容、知识节点或时间线条目。"""
+
+NotesUpdateStatus = Literal["streaming", "final"]
+"""结构化课堂笔记快照状态。streaming 表示课堂中定时更新，final 表示最终快照。"""
+
+NotesKnowledgeTreeStatus = Literal["applied", "skipped", "failed"]
+"""从结构化笔记更新知识树后的处理状态。"""
 
 
 class AgentChatRequest(BaseModel):
@@ -162,6 +168,64 @@ class GlobalSearchResponse(BaseModel):
     """非致命提示，例如没有历史课堂或没有找到依据。"""
 
 
+class NotesSourceSegment(BaseModel):
+    """结构化笔记快照关联的一条 WhisperLive 字幕来源。"""
+
+    segment_id: str
+    """字幕片段 ID，应与已上报到 ``/events`` 的 transcript.segment 一致。"""
+    start_ts: float
+    """课堂内开始时间，单位秒。"""
+    end_ts: float
+    """课堂内结束时间，单位秒。"""
+    text: str
+    """原始或稳定后的字幕文本。"""
+
+
+class NotesKnowledgeTreeUpdateRequest(BaseModel):
+    """``POST /agent/knowledge-tree/update-from-notes`` 的请求体。
+
+    WhisperLive/Qwen 本地脚本会定期把当前结构化 Markdown 笔记上传到后端。
+    后端云端 Agent 基于这份笔记生成知识树，并复用现有 knowledge.extraction
+    事件管线更新前端图谱。
+    """
+
+    session_id: str
+    """要更新知识树的录制中课堂。"""
+    snapshot_id: str
+    """本次笔记快照 ID。脚本应保证同一轮更新内唯一。"""
+    sequence: int = Field(default=0, ge=0)
+    """快照序号，用于日志、去重和排查乱序更新。"""
+    markdown: str = Field(min_length=1)
+    """当前结构化课堂笔记 Markdown。"""
+    markdown_hash: str | None = None
+    """Markdown 内容 hash。为空时后端会按 markdown 文本计算。"""
+    source_segments: list[NotesSourceSegment] = Field(default_factory=list)
+    """生成这份 Markdown 时用到的全量字幕来源。"""
+    recent_source_segments: list[NotesSourceSegment] = Field(default_factory=list)
+    """本次图谱增量优先依据的近期或新增字幕来源。为空时回退到 ``source_segments``。"""
+    update_status: NotesUpdateStatus = "streaming"
+    """笔记快照状态。"""
+
+
+class NotesKnowledgeTreeUpdateResponse(BaseModel):
+    """结构化笔记驱动知识树更新的响应。"""
+
+    status: NotesKnowledgeTreeStatus
+    """处理状态：applied 有图谱增量，skipped 无需更新，failed 云端抽取失败。"""
+    session_id: str
+    """课堂 ID。"""
+    snapshot_id: str
+    """本次笔记快照 ID。"""
+    markdown_hash: str
+    """后端用于去重的 Markdown hash。"""
+    extraction_id: str | None = None
+    """成功生成的 knowledge.extraction ID。"""
+    graph_patch_operations: int = 0
+    """本次图谱增量操作数量。"""
+    warnings: list[str] = Field(default_factory=list)
+    """非致命提示和云端抽取错误摘要。"""
+
+
 __all__ = [
     "AgentArtifact",
     "AgentAnswerMode",
@@ -173,5 +237,10 @@ __all__ = [
     "GlobalSearchRequest",
     "GlobalSearchResponse",
     "GlobalSearchSourceRef",
+    "NotesKnowledgeTreeUpdateRequest",
+    "NotesKnowledgeTreeUpdateResponse",
+    "NotesKnowledgeTreeStatus",
+    "NotesSourceSegment",
+    "NotesUpdateStatus",
     "ResolvedAgentIntent",
 ]

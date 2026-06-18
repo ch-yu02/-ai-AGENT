@@ -7,6 +7,7 @@ LLM 时使用关键词规则；配置 LLM 后优先让模型输出结构化 todo
 
 from typing import Any
 
+from backend.app import prompts
 from backend.app.llm import CloudLLMError
 from backend.app.models import ClassroomContext, KnowledgeTree
 
@@ -123,18 +124,10 @@ class TodoDetectiveSkill:
     ) -> SkillResult:
         """使用云端模型生成结构化待办列表。"""
         assert self.llm_client is not None
+        brief = classroom_brief(context, knowledge_graph)
         payload = self.llm_client.complete_json(
-            system_prompt=(
-                "你是课堂待办提取助手。只能基于课堂资料提取老师布置的任务、"
-                "作业、预习、复习、提交或考试提醒。请输出 JSON object，字段为 "
-                "todos。todos 是数组，每项包含 title、type、due_time、confidence、"
-                "source_refs。source_refs 元素包含 type(segment 或 knowledge_node) 和 id。"
-            ),
-            user_prompt=(
-                "请从下面课堂资料中提取待办。如果没有明确待办，todos 返回空数组。"
-                "输出必须是 JSON，不要 Markdown code fence。\n\n"
-                + classroom_brief(context, knowledge_graph)
-            ),
+            system_prompt=prompts.todo_system_prompt(),
+            user_prompt=prompts.todo_user_prompt(brief),
             temperature=0.1,
         )
         items = [self._normalize_todo(item) for item in require_list(payload, "todos")]

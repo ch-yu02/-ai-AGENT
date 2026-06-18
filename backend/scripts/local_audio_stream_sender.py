@@ -33,6 +33,12 @@ from typing import Any, Callable, Iterable, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+ROOT_DIR = Path(__file__).resolve().parents[2]
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
+
+from backend.app import prompts as prompt_templates
+
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 DEFAULT_OPENVINO_ROOT = Path(os.getenv("OPENVINO_ROOT", "/home/edu-mate_user/openvino"))
@@ -576,32 +582,15 @@ def build_transcript_polish_prompt(
     previous_context: list[str],
 ) -> str:
     """Prompt Qwen to produce readable classroom subtitle sentences."""
-    context = "\n".join(f"- {item}" for item in previous_context[-3:]) or "- 无"
-    return (
-        "你是课堂实时字幕标点恢复器。请只对本次 Whisper 原始转写做保守处理："
-        "补充标点、修正高置信度错别字、按语义拆成自然短句。\n"
-        "严格限制：不得总结，不得扩写，不得补全被截断的句子，不得加入原文没有的信息，"
-        "不得改变专有名词含义。上一段字幕上下文只用于辨认术语，禁止复制到输出。"
-        "输出中的每个分句都必须能从本次原始转写中找到依据。\n"
-        "只输出一个 JSON object，不要 Markdown，不要解释。\n"
-        "JSON schema: {\"sentences\": [\"一句自然字幕\", \"下一句自然字幕\"]}\n\n"
-        "上一段字幕上下文:\n"
-        f"{context}\n\n"
-        "Whisper 原始转写:\n"
-        f"{raw_text.strip()}\n\n"
-        "JSON:"
+    return prompt_templates.transcript_polish_prompt(
+        raw_text=raw_text,
+        previous_context=previous_context,
     )
 
 
 def build_transcript_polish_repair_prompt(raw_text: str) -> str:
     """Ask Qwen to convert a malformed polish response into the sentence schema."""
-    return (
-        "下面的文本本应是课堂字幕润色 JSON，但格式不合法。\n"
-        "请只输出一个合法 JSON object，不要解释，不要 Markdown。\n"
-        "必须且只能包含 sentences 字段，类型为字符串数组。\n\n"
-        f"原始文本:\n{raw_text}\n\n"
-        "合法 JSON:"
-    )
+    return prompt_templates.transcript_polish_repair_prompt(raw_text)
 
 
 def normalize_polished_sentences(value: object) -> list[str]:
@@ -684,11 +673,11 @@ def filter_grounded_polished_sentences(
             continue
         if len(sentence_key) >= 8 and sentence_key in previous_keys:
             rejected_count += 1
-            log(f"Rejected repeated polish sentence from previous context: {sentence}")
+            log("Rejected repeated polish sentence from previous context")
             continue
         if not is_grounded_polished_sentence(sentence=sentence, raw_text=raw_text):
             rejected_count += 1
-            log(f"Rejected ungrounded polish sentence: {sentence}")
+            log("Rejected ungrounded polish sentence")
             continue
         accepted.append(sentence)
         accepted_keys.add(sentence_key)
@@ -709,50 +698,23 @@ def build_qwen_extraction_prompt(
     segments: list[TranscriptRecord],
 ) -> str:
     """Prompt Qwen for a strict extraction-shaped JSON object."""
-    source_lines = "\n".join(
-        f"- id={segment.segment_id}; ts={segment.start_ts:.2f}-{segment.end_ts:.2f}; "
-        f"text={segment.text}"
-        for segment in segments
-    )
-    allowed_ids = ", ".join(segment.segment_id for segment in segments)
-    return (
-        "你是 EDU-Mate 的本地课堂知识图谱抽取器。\n"
-        "请只根据给定字幕抽取轻量知识图谱，不要补充字幕中没有出现的信息。\n"
-        "只输出一个 JSON object，不要 Markdown，不要解释。\n"
-        "JSON schema:\n"
-        "{\n"
-        '  "entities": [\n'
-        '    {"entity_id": "node_optional", "name": "概念名", "type": "concept", '
-        '"description": "一句话定义或课堂依据"}\n'
-        "  ],\n"
-        '  "relations": [\n'
-        '    {"source": "起点概念名", "target": "终点概念名", "relation": "related_to"}\n'
-        "  ],\n"
-        '  "source_segment_ids": ["seg_id"],\n'
-        '  "importance": 0.0\n'
-        "}\n"
-        "要求：\n"
-        "- entity name 使用简洁中文课堂术语。\n"
-        "- relation 使用 snake_case 英文标签，例如 defines, mentions, related_to, "
-        "belongs_to, part_of, causes, contrasts_with。\n"
-        f"- source_segment_ids 只能从这些 ID 中选择：{allowed_ids}。\n"
-        "- 没有明确知识点时返回空 entities 和空 relations。\n\n"
-        f"session_id: {session_id}\n"
-        "字幕:\n"
-        f"{source_lines}\n\n"
-        "JSON:"
+    return prompt_templates.local_qwen_extraction_prompt(
+        session_id=session_id,
+        segments=[
+            {
+                "segment_id": segment.segment_id,
+                "start_ts": segment.start_ts,
+                "end_ts": segment.end_ts,
+                "text": segment.text,
+            }
+            for segment in segments
+        ],
     )
 
 
 def build_json_repair_prompt(raw_text: str) -> str:
     """Ask Qwen to convert a malformed response into the required JSON shape."""
-    return (
-        "下面的文本本应是知识图谱抽取 JSON，但格式不合法。\n"
-        "请只输出一个合法 JSON object，不要解释，不要 Markdown。\n"
-        "必须包含 entities、relations、source_segment_ids、importance 字段。\n\n"
-        f"原始文本:\n{raw_text}\n\n"
-        "合法 JSON:"
-    )
+    return prompt_templates.local_qwen_extraction_repair_prompt(raw_text)
 
 
 def parse_json_object(text: str) -> dict[str, Any]:
@@ -1356,7 +1318,7 @@ def run_audio_stream(
         for payload in payloads:
             payload_text = str(payload["text"])
             if is_recent_duplicate_transcript(payload_text, recent_transcript_keys):
-                log(f"Skipped duplicate transcript.segment {payload['segment_id']}: {payload_text}")
+                log(f"Skipped duplicate transcript.segment {payload['segment_id']}")
                 continue
 
             send_event_func(
@@ -1368,7 +1330,6 @@ def run_audio_stream(
             )
             stats.transcript_count += 1
             remember_transcript(payload_text, recent_transcript_keys)
-            log(f"Sent transcript.segment {payload['segment_id']}")
 
             segment = TranscriptRecord(
                 segment_id=str(payload["segment_id"]),

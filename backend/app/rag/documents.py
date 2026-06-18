@@ -22,6 +22,7 @@ from backend.app.models import ClassroomContext, KnowledgeEdge, KnowledgeNode, K
 
 RagDocumentType = Literal[
     "segment",
+    "structured_note",
     "visual",
     "knowledge_node",
     "knowledge_edge",
@@ -46,6 +47,7 @@ class RagDocument(BaseModel):
 def build_session_documents(
     context: ClassroomContext,
     knowledge_graph: KnowledgeTree,
+    structured_notes_markdown: str | None = None,
 ) -> list[RagDocument]:
     """构建一节课堂的全部可检索文档。
 
@@ -58,6 +60,8 @@ def build_session_documents(
     """
     documents: list[RagDocument] = []
     documents.extend(_transcript_documents(context))
+    if structured_notes_markdown and structured_notes_markdown.strip():
+        documents.append(_structured_notes_document(context, structured_notes_markdown))
     documents.extend(_visual_documents(context))
     documents.extend(_knowledge_node_documents(knowledge_graph))
     documents.extend(_knowledge_edge_documents(knowledge_graph))
@@ -88,6 +92,25 @@ def _transcript_documents(context: ClassroomContext) -> list[RagDocument]:
             )
         )
     return documents
+
+
+def _structured_notes_document(
+    context: ClassroomContext,
+    structured_notes_markdown: str,
+) -> RagDocument:
+    """把 Qwen 结构化课堂笔记转换成检索文档。
+
+    这份文档比原始字幕更适合回答“这节课重点是什么、知识主线是什么”这类
+    课后问题。原始字幕仍保留为独立 segment 文档，便于追溯细节。
+    """
+    first_ts = context.transcript[0].start_ts if context.transcript else None
+    return _document(
+        session_id=context.session_id,
+        source_type="structured_note",
+        source_id="structured_notes",
+        text=f"结构化课堂笔记：\n{structured_notes_markdown}",
+        ts=first_ts,
+    )
 
 
 def _visual_documents(context: ClassroomContext) -> list[RagDocument]:

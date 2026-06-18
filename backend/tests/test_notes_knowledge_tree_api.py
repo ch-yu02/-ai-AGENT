@@ -1,0 +1,109 @@
+import unittest
+
+from backend.app.agent.knowledge_tree_notes import MarkdownKnowledgeTreeAgent
+from backend.app.agent.schemas import NotesKnowledgeTreeUpdateRequest
+from backend.app.api import agent as agent_api
+from backend.app.core import (
+    context_manager,
+    knowledge_graph_manager,
+    session_manager,
+    websocket_manager,
+)
+from backend.app.models import StartSessionRequest
+
+
+class FakeWebSocket:
+    def __init__(self) -> None:
+        self.sent_payloads: list[dict] = []
+
+    async def accept(self) -> None:
+        pass
+
+    async def send_json(self, data: dict) -> None:
+        self.sent_payloads.append(data)
+
+
+class FakeJsonLLMClient:
+    def complete_json(self, system_prompt, user_prompt, *, temperature=0.1):  # type: ignore[no-untyped-def]
+        return {
+            "entities": [
+                {"name": "傅里叶变换", "type": "concept"},
+                {"name": "频域", "type": "concept"},
+            ],
+            "relations": [
+                {
+                    "source": "傅里叶变换",
+                    "target": "频域",
+                    "relation": "contains",
+                }
+            ],
+            "source_segment_ids": ["seg_001"],
+            "importance": 0.8,
+        }
+
+
+class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        session_manager.clear()
+        context_manager.clear()
+        knowledge_graph_manager.clear()
+        websocket_manager.clear()
+
+        session = session_manager.create_session(
+            StartSessionRequest(title="结构化笔记图谱测试")
+        )
+        self.session_id = session.session_id
+        context_manager.start_session(self.session_id)
+        knowledge_graph_manager.start_session(self.session_id)
+        self.socket = FakeWebSocket()
+        self.original_agent = agent_api.markdown_knowledge_tree_agent
+        agent_api.markdown_knowledge_tree_agent = MarkdownKnowledgeTreeAgent(
+            FakeJsonLLMClient()
+        )
+
+    async def asyncSetUp(self) -> None:
+        await websocket_manager.connect(self.session_id, self.socket)
+
+    def tearDown(self) -> None:
+        agent_api.markdown_knowledge_tree_agent = self.original_agent
+        session_manager.clear()
+        context_manager.clear()
+        knowledge_graph_manager.clear()
+        websocket_manager.clear()
+
+    async def test_notes_snapshot_updates_graph_and_broadcasts_patch(self) -> None:
+        response = await agent_api.update_knowledge_tree_from_notes(
+            NotesKnowledgeTreeUpdateRequest(
+                session_id=self.session_id,
+                snapshot_id="notes_001",
+                sequence=1,
+                markdown="# 课堂笔记\n\n- 傅里叶变换包含频域分析。",
+                source_segments=[
+                    {
+                        "segment_id": "seg_001",
+                        "start_ts": 1.0,
+                        "end_ts": 5.0,
+                        "text": "傅里叶变换包含频域分析。",
+                    }
+                ],
+            )
+        )
+
+        self.assertEqual(response.status, "applied")
+        self.assertGreater(response.graph_patch_operations, 0)
+        graph = knowledge_graph_manager.get_graph(self.session_id)
+        self.assertEqual({node.label for node in graph.nodes}, {"傅里叶变换", "频域"})
+        self.assertEqual(graph.edges[0].relation, "contains")
+
+        event_messages = [
+            payload
+            for payload in self.socket.sent_payloads
+            if payload["type"] == "event.received"
+        ]
+        self.assertEqual(len(event_messages), 1)
+        self.assertEqual(event_messages[0]["data"]["event_type"], "knowledge.extraction")
+        self.assertIsNotNone(event_messages[0]["data"]["graph_patch"])
+
+
+if __name__ == "__main__":
+    unittest.main()

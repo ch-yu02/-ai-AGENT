@@ -55,6 +55,9 @@ class KnowledgeGraphEventError(Exception):
 class KnowledgeGraphManager:
     """Maintains one live knowledge graph per classroom session."""
 
+    MAX_NODE_SOURCE_REFS = 3
+    MAX_EDGE_SOURCE_REFS = 2
+
     def __init__(self) -> None:
         self._graphs: dict[str, KnowledgeTree] = {}
         # _node_index maps normalized entity labels to node_id. It lets the
@@ -165,7 +168,7 @@ class KnowledgeGraphManager:
                 summary=entity.description,
                 level=0,
                 importance=importance,
-                source_refs=list(refs),
+                source_refs=self._limited_refs(refs, self.MAX_NODE_SOURCE_REFS),
             )
             graph.nodes.append(node)
             index[key] = node.node_id
@@ -183,7 +186,10 @@ class KnowledgeGraphManager:
             old_importance = node.importance or 0.0
             node.importance = max(old_importance, importance)
             changed = changed or node.importance != old_importance
-        changed = self._merge_refs(node.source_refs, refs) or changed
+        changed = (
+            self._merge_refs(node.source_refs, refs, max_refs=self.MAX_NODE_SOURCE_REFS)
+            or changed
+        )
 
         if not changed:
             return None
@@ -206,14 +212,18 @@ class KnowledgeGraphManager:
         if node_id is not None:
             node = self._find_node(graph, node_id)
             if node is not None:
-                self._merge_refs(node.source_refs, refs)
+                self._merge_refs(
+                    node.source_refs,
+                    refs,
+                    max_refs=self.MAX_NODE_SOURCE_REFS,
+                )
                 return node, None
 
         node = KnowledgeNode(
             node_id=self._node_id(label),
             label=label,
             level=0,
-            source_refs=list(refs),
+            source_refs=self._limited_refs(refs, self.MAX_NODE_SOURCE_REFS),
         )
         graph.nodes.append(node)
         index[key] = node.node_id
@@ -244,7 +254,11 @@ class KnowledgeGraphManager:
 
         for edge in graph.edges:
             if edge.edge_id == edge_id:
-                self._merge_refs(edge.source_refs, refs)
+                self._merge_refs(
+                    edge.source_refs,
+                    refs,
+                    max_refs=self.MAX_EDGE_SOURCE_REFS,
+                )
                 return operations
 
         edge = KnowledgeEdge(
@@ -252,7 +266,7 @@ class KnowledgeGraphManager:
             source=source_node.node_id,
             target=target_node.node_id,
             relation=relation.relation,
-            source_refs=list(refs),
+            source_refs=self._limited_refs(refs, self.MAX_EDGE_SOURCE_REFS),
         )
         graph.edges.append(edge)
         operations.append(GraphPatchOperation(op="add_edge", edge=edge))
@@ -261,8 +275,13 @@ class KnowledgeGraphManager:
     # ── 工具方法 ─────────────────────────────────────────────
 
     def _source_refs(self, extraction: KnowledgeExtraction) -> list[SourceRef]:
-        """Build traceability references from extraction source fields."""
-        refs = [SourceRef(type="event", id=extraction.extraction_id)]
+        """Build compact traceability references from extraction source fields.
+
+        ``event`` refs are intentionally omitted here. They point to extraction
+        bookkeeping rather than classroom material and can grow very large when
+        note snapshots repeatedly cover cumulative transcript ranges.
+        """
+        refs: list[SourceRef] = []
         for segment_id in extraction.source_segment_ids:
             ts = extraction.timestamp_range[0] if extraction.timestamp_range else None
             refs.append(SourceRef(type="segment", id=segment_id, ts=ts))
@@ -271,17 +290,39 @@ class KnowledgeGraphManager:
             refs.append(SourceRef(type="visual", id=visual_id, ts=ts))
         return refs
 
-    def _merge_refs(self, target: list[SourceRef], refs: list[SourceRef]) -> bool:
-        """Append new source refs while preserving existing traceability."""
-        existing = {(ref.type, ref.id, ref.ts) for ref in target}
-        changed = False
+    def _merge_refs(
+        self,
+        target: list[SourceRef],
+        refs: list[SourceRef],
+        *,
+        max_refs: int,
+    ) -> bool:
+        """Merge refs while keeping the latest compact classroom-material window."""
+        original = [(ref.type, ref.id, ref.ts) for ref in target]
+        material_ref_count = sum(1 for ref in refs if ref.type != "event")
+        if material_ref_count >= max_refs:
+            merged = self._limited_refs(refs, max_refs)
+        else:
+            merged = self._limited_refs([*target, *refs], max_refs)
+        merged_key = [(ref.type, ref.id, ref.ts) for ref in merged]
+        if merged_key == original:
+            return False
+        target[:] = merged
+        return True
+
+    def _limited_refs(self, refs: list[SourceRef], max_refs: int) -> list[SourceRef]:
+        """Return recent unique classroom-material refs capped for compact storage."""
+        unique: list[SourceRef] = []
+        seen: set[tuple[str, str, float | None]] = set()
         for ref in refs:
+            if ref.type == "event":
+                continue
             key = (ref.type, ref.id, ref.ts)
-            if key not in existing:
-                target.append(ref)
-                existing.add(key)
-                changed = True
-        return changed
+            if key in seen:
+                continue
+            unique.append(ref)
+            seen.add(key)
+        return unique[-max_refs:]
 
     def _recompute_roots(self, graph: KnowledgeTree) -> None:
         """Recalculate root nodes from edge targets.

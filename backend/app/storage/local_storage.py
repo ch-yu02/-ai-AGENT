@@ -81,6 +81,7 @@ class LocalStorage:
         session: LectureSession,
         context: ClassroomContext,
         knowledge_graph: KnowledgeTree,
+        structured_notes_markdown: str | None = None,
     ) -> StorageWriteResult:
         """Persist all MVP classroom artifacts for one ended session.
 
@@ -101,9 +102,13 @@ class LocalStorage:
             "timeline": session_dir / "timeline.json",
             "knowledge_graph": session_dir / "knowledge_graph.json",
         }
+        if structured_notes_markdown and structured_notes_markdown.strip():
+            files["structured_notes"] = session_dir / "structured_notes.md"
 
         self._write_json(files["metadata"], session.model_dump())
         self._write_text(files["transcript"], self._render_transcript_markdown(context))
+        if "structured_notes" in files:
+            self._write_text(files["structured_notes"], structured_notes_markdown)
         self._write_json(
             files["timeline"],
             [item.model_dump() for item in context.timeline],
@@ -320,10 +325,16 @@ class LocalStorage:
         transcript_markdown = (session_dir / "transcript.md").read_text(
             encoding="utf-8"
         )
+        structured_notes_path = session_dir / "structured_notes.md"
 
         return SessionHistoryDetail(
             session=session,
             transcript_markdown=transcript_markdown,
+            structured_notes_markdown=(
+                structured_notes_path.read_text(encoding="utf-8")
+                if structured_notes_path.exists()
+                else None
+            ),
             timeline=timeline,
             knowledge_graph=knowledge_graph,
             storage_path=str(session_dir),

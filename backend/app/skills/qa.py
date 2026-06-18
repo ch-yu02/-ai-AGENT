@@ -5,6 +5,7 @@ QA 技能是 Agent 接入 RAG 层的唯一入口。默认模式严格依据课�
 自身通用知识补充解释，并在 warning 中标明“包含模型补充”。
 """
 
+from backend.app import prompts
 from backend.app.llm import CloudLLMError
 from backend.app.models import ClassroomContext, KnowledgeTree
 from backend.app.rag import (
@@ -43,9 +44,14 @@ class QaSkill:
         knowledge_graph: KnowledgeTree,
         *,
         answer_mode: str = "strict",
+        structured_notes_markdown: str | None = None,
     ) -> SkillResult:
         """检索课堂资料并返回带来源的回答。"""
-        documents = build_session_documents(context, knowledge_graph)
+        documents = build_session_documents(
+            context,
+            knowledge_graph,
+            structured_notes_markdown=structured_notes_markdown,
+        )
         result = self.query_service.query(prompt, documents)
         if answer_mode == "grounded":
             return self._grounded_result(prompt, result)
@@ -101,20 +107,19 @@ class QaSkill:
 
         try:
             payload = self.llm_client.complete_json(
-                system_prompt=(
-                    "你是课堂答疑助手。必须优先依据课堂来源回答；可以使用你的通用"
-                    "知识补充解释，但必须明确区分课堂内容和补充解释。不要编造课堂"
-                    "中没有出现过的来源。请输出 JSON object，字段 answer。"
-                ),
-                user_prompt=(
-                    f"学生问题：{prompt}\n\n"
-                    f"课堂检索回答：{result.answer}\n\n"
-                    "课堂来源：\n"
-                    + "\n".join(
-                        f"- {ref.type}:{ref.id}; ts={ref.ts}; text={ref.text}"
+                system_prompt=prompts.grounded_qa_system_prompt(),
+                user_prompt=prompts.grounded_qa_user_prompt(
+                    student_prompt=prompt,
+                    retrieved_answer=result.answer,
+                    source_refs=[
+                        {
+                            "type": ref.type,
+                            "id": ref.id,
+                            "ts": ref.ts,
+                            "text": ref.text,
+                        }
                         for ref in result.source_refs
-                    )
-                    + "\n\n请用中文回答，格式上明确包含“根据课堂内容”和“补充解释”。"
+                    ],
                 ),
                 temperature=0.2,
             )

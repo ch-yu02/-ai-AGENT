@@ -75,6 +75,61 @@ class KnowledgeGraphManagerTest(unittest.TestCase):
         self.assertEqual(graph.nodes[0].summary, "将信号转换到频域分析")
         self.assertEqual(patch.operations[0].op, "update_node")
 
+    def test_graph_source_refs_are_compact_and_skip_event_refs(self) -> None:
+        self.manager.apply_extraction(
+            KnowledgeExtraction(
+                extraction_id="ext_many_refs_001",
+                session_id=self.session_id,
+                source_segment_ids=[
+                    "seg_001",
+                    "seg_002",
+                    "seg_003",
+                    "seg_004",
+                    "seg_005",
+                ],
+                timestamp_range=(1.0, 12.0),
+                entities=[{"name": "傅里叶变换"}],
+                relations=[
+                    {
+                        "source": "傅里叶变换",
+                        "target": "频域",
+                        "relation": "maps_to",
+                    }
+                ],
+            )
+        )
+        self.manager.apply_extraction(
+            KnowledgeExtraction(
+                extraction_id="ext_many_refs_002",
+                session_id=self.session_id,
+                source_segment_ids=["seg_006", "seg_007"],
+                timestamp_range=(13.0, 20.0),
+                entities=[{"name": "傅里叶变换", "description": "频域分析工具"}],
+                relations=[
+                    {
+                        "source": "傅里叶变换",
+                        "target": "频域",
+                        "relation": "maps_to",
+                    }
+                ],
+            )
+        )
+
+        graph = self.manager.get_graph(self.session_id)
+        fourier = next(node for node in graph.nodes if node.label == "傅里叶变换")
+        self.assertLessEqual(len(fourier.source_refs), 3)
+        self.assertEqual({ref.type for ref in fourier.source_refs}, {"segment"})
+        self.assertEqual(
+            [ref.id for ref in fourier.source_refs],
+            ["seg_005", "seg_006", "seg_007"],
+        )
+
+        self.assertEqual(len(graph.edges), 1)
+        edge = graph.edges[0]
+        self.assertLessEqual(len(edge.source_refs), 2)
+        self.assertEqual({ref.type for ref in edge.source_refs}, {"segment"})
+        self.assertEqual([ref.id for ref in edge.source_refs], ["seg_006", "seg_007"])
+
     def test_relation_can_create_missing_endpoint_nodes(self) -> None:
         patch = self.manager.apply_extraction(
             KnowledgeExtraction(

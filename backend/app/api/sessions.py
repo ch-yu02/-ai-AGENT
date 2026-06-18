@@ -34,6 +34,7 @@ import os
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.responses import FileResponse
 
+from backend.app.agent.knowledge_tree_notes import markdown_knowledge_tree_agent
 from backend.app.core import (
     ContextNotFoundError,
     KnowledgeGraphNotFoundError,
@@ -291,6 +292,7 @@ async def end_session(session_id: str) -> LectureSession:
         session=ended_session,
         context=context,
         knowledge_graph=knowledge_graph,
+        structured_notes_markdown=markdown_knowledge_tree_agent.latest_markdown(session_id),
     )
     post_class_files = _generate_and_save_post_class_artifacts(
         session_id=session_id,
@@ -301,6 +303,7 @@ async def end_session(session_id: str) -> LectureSession:
         session_id=session_id,
         context=context,
         knowledge_graph=knowledge_graph,
+        structured_notes_markdown=markdown_knowledge_tree_agent.latest_markdown(session_id),
     )
 
     await websocket_manager.broadcast(
@@ -415,6 +418,7 @@ def _build_rag_index_when_enabled(
     session_id: str,
     context,
     knowledge_graph,
+    structured_notes_markdown: str | None = None,
 ) -> dict[str, object]:
     """在启用 LlamaIndex 后为已结束课堂构建持久化索引。
 
@@ -438,7 +442,11 @@ def _build_rag_index_when_enabled(
     service = LlamaIndexQueryService(
         index_dir_resolver=local_storage.session_index_dir,
     )
-    documents = build_session_documents(context, knowledge_graph)
+    documents = build_session_documents(
+        context,
+        knowledge_graph,
+        structured_notes_markdown=structured_notes_markdown,
+    )
     try:
         index_dir = service.build_and_persist(documents, session_id=session_id)
     except Exception as exc:  # noqa: BLE001 - 可选索引失败不应影响课堂结束。

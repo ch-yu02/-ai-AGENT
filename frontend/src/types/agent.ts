@@ -31,7 +31,7 @@ export type AgentArtifact = {
 
 export type AgentSourceRef = {
   // 来源类型与后端 AgentSourceRef 对齐。
-  type: "segment" | "visual" | "knowledge_node" | "timeline";
+  type: "segment" | "visual" | "knowledge_node" | "structured_note" | "timeline";
   // segment_id / image_id / node_id / timeline item_id。
   id: string;
   // 课堂内时间，知识节点可能没有。

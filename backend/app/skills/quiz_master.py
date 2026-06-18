@@ -6,6 +6,7 @@ LLM 后会优先生成更自然的题目、答案和解析；模型失败时仍�
 
 from typing import Any
 
+from backend.app import prompts
 from backend.app.llm import CloudLLMError
 from backend.app.models import ClassroomContext, KnowledgeTree
 
@@ -138,18 +139,10 @@ class QuizMasterSkill:
     ) -> SkillResult:
         """使用云端模型生成结构化自测题。"""
         assert self.llm_client is not None
+        brief = classroom_brief(context, knowledge_graph)
         payload = self.llm_client.complete_json(
-            system_prompt=(
-                "你是课堂自测题生成助手。只能基于课堂资料出题，不要引入课外内容。"
-                "请输出 JSON object，字段为 quiz。quiz 是数组，每项包含 question、"
-                "type、options、answer、explanation、source_refs。source_refs 元素"
-                "包含 type(segment 或 knowledge_node) 和 id。"
-            ),
-            user_prompt=(
-                "请生成 3 到 5 道中文自测题，优先覆盖关键概念。输出必须是 JSON，"
-                "不要 Markdown code fence。\n\n"
-                + classroom_brief(context, knowledge_graph)
-            ),
+            system_prompt=prompts.quiz_system_prompt(),
+            user_prompt=prompts.quiz_user_prompt(brief),
             temperature=0.2,
         )
         questions = [self._normalize_question(item) for item in require_list(payload, "quiz")]

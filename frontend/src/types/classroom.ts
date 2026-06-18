@@ -135,6 +135,8 @@ export type SessionHistoryDetail = {
   // transcript.md。当前看板的字幕列表从 timeline.data 还原，
   // 这个 Markdown 字段保留给后续“全文阅读/导出/总结”视图。
   transcript_markdown: string;
+  // structured_notes.md。由 WhisperLive/Qwen 实时维护，供课后阅读和 Agent/RAG 查询。
+  structured_notes_markdown?: string | null;
   // timeline.json。历史看板的时间线、字幕和视觉内容都从这里派生。
   timeline: TimelineItem[];
   // knowledge_graph.json。历史图谱直接展示结束课堂时的最终快照。

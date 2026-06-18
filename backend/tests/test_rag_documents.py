@@ -74,6 +74,31 @@ class RagDocumentsTest(unittest.TestCase):
         self.assertEqual(documents[2].metadata["source_id"], "node_fourier")
         self.assertEqual(documents[4].metadata["relation"], "maps_to")
 
+    def test_builds_document_from_structured_notes_markdown(self) -> None:
+        session_id = "lec_rag_notes"
+        context = ClassroomContext(
+            session_id=session_id,
+            transcript=[
+                TranscriptSegment(
+                    segment_id="seg_001",
+                    session_id=session_id,
+                    start_ts=2.0,
+                    end_ts=3.0,
+                    text="课堂讲傅里叶变换。",
+                )
+            ],
+        )
+
+        documents = build_session_documents(
+            context,
+            KnowledgeTree(session_id=session_id),
+            structured_notes_markdown="# 结构化笔记\n\n- 傅里叶变换是本节课重点。",
+        )
+
+        self.assertEqual(documents[1].metadata["type"], "structured_note")
+        self.assertEqual(documents[1].metadata["source_id"], "structured_notes")
+        self.assertIn("傅里叶变换是本节课重点", documents[1].text)
+
 
 if __name__ == "__main__":
     unittest.main()

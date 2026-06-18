@@ -5,6 +5,7 @@
 返回结构不合规时自动回退规则版，避免影响课堂结束保存。
 """
 
+from backend.app import prompts
 from backend.app.llm import CloudLLMError
 from backend.app.models import ClassroomContext, KnowledgeTree
 
@@ -109,17 +110,10 @@ class SummarizerSkill:
     ) -> SkillResult:
         """使用云端模型生成结构化总结。"""
         assert self.llm_client is not None
+        brief = classroom_brief(context, knowledge_graph)
         payload = self.llm_client.complete_json(
-            system_prompt=(
-                "你是课堂学习助手。只能基于用户提供的课堂资料总结，不要编造。"
-                "请输出 JSON object，字段为 summary_markdown 和 source_refs。"
-                "source_refs 是数组，元素包含 type(segment 或 knowledge_node) 和 id。"
-            ),
-            user_prompt=(
-                "请用中文生成一份简洁课堂总结，包含重点、知识脉络和复习建议。"
-                "输出必须是 JSON，不要 Markdown code fence。\n\n"
-                + classroom_brief(context, knowledge_graph)
-            ),
+            system_prompt=prompts.summary_system_prompt(),
+            user_prompt=prompts.summary_user_prompt(brief),
             temperature=0.2,
         )
         summary = str(payload["summary_markdown"]).strip()

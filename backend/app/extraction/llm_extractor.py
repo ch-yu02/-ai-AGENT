@@ -10,6 +10,7 @@ from typing import Any, Protocol
 
 from pydantic import ValidationError
 
+from backend.app import prompts
 from backend.app.llm import CloudLLMClient, CloudLLMError, load_llm_settings
 from backend.app.models import (
     ClassroomContext,
@@ -142,19 +143,7 @@ class LLMKnowledgeExtractor(KnowledgeExtractor):
 
     def _system_prompt(self) -> str:
         """Prompt contract for stable graph extraction JSON."""
-        return (
-            "You are EDU-Mate's internal classroom knowledge extractor. "
-            "Return only a JSON object matching this schema: "
-            "{extraction_id:string optional, source_segment_ids:string[], "
-            "source_visual_ids:string[], entities:[{entity_id?:string, "
-            "name:string, type:string, description?:string}], "
-            "relations:[{source:string,target:string,relation:string}], "
-            "importance:number optional}. "
-            "Use only the provided classroom transcript/OCR/caption sources. "
-            "Do not invent source ids. Prefer concise Chinese entity names. "
-            "Relations must use snake_case labels such as defines, mentions, "
-            "related_to, maps_to, belongs_to, part_of, derives_from."
-        )
+        return prompts.llm_knowledge_extractor_system_prompt()
 
     def _user_prompt(
         self,
@@ -163,33 +152,27 @@ class LLMKnowledgeExtractor(KnowledgeExtractor):
         visuals: list[ImageCapture],
     ) -> str:
         """Build a compact, source-ID-preserving prompt for the model."""
-        lines = [f"session_id: {context.session_id}", "", "transcript:"]
-        if transcript:
-            for segment in transcript:
-                lines.append(
-                    "- "
-                    f"id={segment.segment_id}; "
-                    f"ts={segment.start_ts:.2f}-{segment.end_ts:.2f}; "
-                    f"text={segment.text}"
-                )
-        else:
-            lines.append("- none")
-
-        lines.extend(["", "visuals:"])
-        if visuals:
-            for visual in visuals:
-                ocr = visual.ocr_text or ""
-                caption = visual.caption or ""
-                lines.append(
-                    "- "
-                    f"id={visual.image_id}; "
-                    f"ts={visual.capture_ts:.2f}; "
-                    f"ocr={ocr}; "
-                    f"caption={caption}"
-                )
-        else:
-            lines.append("- none")
-        return "\n".join(lines)
+        return prompts.llm_knowledge_extractor_user_prompt(
+            session_id=context.session_id,
+            transcript=[
+                {
+                    "id": segment.segment_id,
+                    "start_ts": segment.start_ts,
+                    "end_ts": segment.end_ts,
+                    "text": segment.text,
+                }
+                for segment in transcript
+            ],
+            visuals=[
+                {
+                    "id": visual.image_id,
+                    "capture_ts": visual.capture_ts,
+                    "ocr": visual.ocr_text or "",
+                    "caption": visual.caption or "",
+                }
+                for visual in visuals
+            ],
+        )
 
     def _unprocessed_sources(
         self,

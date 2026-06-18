@@ -11,7 +11,8 @@ class CloudLLMClientTest(unittest.TestCase):
 
         self.assertFalse(settings.enabled)
         self.assertEqual(settings.provider, "deepseek")
-        self.assertEqual(settings.model, "deepseek-chat")
+        self.assertEqual(settings.model, "deepseek-v4-flash")
+        self.assertEqual(settings.base_url, "https://api.deepseek.com")
 
     def test_local_provider_is_enabled_without_api_key(self) -> None:
         with patch.dict(

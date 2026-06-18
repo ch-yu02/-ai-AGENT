@@ -152,6 +152,8 @@ class SessionHistoryDetail(BaseModel):
     """课堂元信息。"""
     transcript_markdown: str
     """保存到 transcript.md 的人可读字幕记录。"""
+    structured_notes_markdown: str | None = None
+    """保存到 structured_notes.md 的 Qwen 结构化课堂笔记。旧课堂可能为空。"""
     timeline: list[TimelineItem] = Field(default_factory=list)
     """保存到 timeline.json 的统一时间线。"""
     knowledge_graph: KnowledgeTree

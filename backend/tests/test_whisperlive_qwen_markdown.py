@@ -1,8 +1,10 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from backend.scripts.whisperlive_qwen_markdown import (
+    BackendSyncer,
     MarkdownResult,
     PeriodicMarkdownUpdater,
     WhisperLiveSegment,
@@ -16,6 +18,7 @@ from backend.scripts.whisperlive_qwen_markdown import (
     parse_domain_terms,
     parse_whisperlive_segments,
     render_markdown,
+    whisperlive_segment_id,
 )
 
 
@@ -107,6 +110,36 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         self.assertIn("课堂语音转录助手", prompt)
         self.assertIn("课堂内容、重点", prompt)
 
+    def test_markdown_output_path_uses_session_structured_notes_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            sessions_dir = root / "sessions"
+            input_path = root / "lecture.mp3"
+
+            session_path = make_markdown_output_path(
+                root / "fallback",
+                input_path,
+                session_id="lec_20260616_010203_ab12cd34",
+                sessions_dir=sessions_dir,
+            )
+            fallback_path = make_markdown_output_path(root / "fallback", input_path)
+
+            self.assertEqual(
+                session_path,
+                sessions_dir / "lec_20260616_010203_ab12cd34" / "structured_notes.md",
+            )
+            self.assertTrue(session_path.parent.exists())
+            self.assertEqual(fallback_path.parent, root / "fallback")
+            self.assertTrue(fallback_path.name.endswith("_lecture_notes.md"))
+
+            with self.assertRaises(ValueError):
+                make_markdown_output_path(
+                    root / "fallback",
+                    input_path,
+                    session_id="../bad",
+                    sessions_dir=sessions_dir,
+                )
+
     def test_fallback_markdown_result_uses_segment_text(self) -> None:
         result = fallback_markdown_result(
             [WhisperLiveSegment(0.0, 1.0, "傅里叶变换", True)]
@@ -168,6 +201,43 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         self.assertEqual(result.sections, [("文化渗透", ["在中国传教"])])
         self.assertEqual(result.keywords, ["文化渗透"])
         self.assertEqual(result.clean_transcript, ["文化渗透指的是在中国传教。"])
+
+    def test_clean_transcript_allows_larger_asr_typo_corrections(self) -> None:
+        segments = [
+            WhisperLiveSegment(0.0, 1.0, "欢迎走进中国近现代式钢要", True),
+            WhisperLiveSegment(1.0, 2.0, "期末突击苏晨克", True),
+            WhisperLiveSegment(2.0, 3.0, "这是目前全国高校通用的观光教材", True),
+            WhisperLiveSegment(3.0, 4.0, "咱们今天所有内容严格对标靠电设计", True),
+            WhisperLiveSegment(4.0, 5.0, "直接烤点 重点和得分点", True),
+        ]
+        result = enforce_markdown_grounding(
+            MarkdownResult(
+                title="课堂笔记",
+                summary=[],
+                sections=[],
+                keywords=[],
+                clean_transcript=[
+                    "欢迎走进中国近现代史纲要。",
+                    "期末突击速成课。",
+                    "这是目前全国高校通用的官方教材。",
+                    "咱们今天所有内容严格对标考点设计。",
+                    "直接考点、重点和得分点。",
+                ],
+            ),
+            segments=segments,
+            domain_terms=[],
+        )
+
+        self.assertEqual(
+            result.clean_transcript,
+            [
+                "欢迎走进中国近现代史纲要。",
+                "期末突击速成课。",
+                "这是目前全国高校通用的官方教材。",
+                "咱们今天所有内容严格对标考点设计。",
+                "直接考点、重点和得分点。",
+            ],
+        )
 
     def test_render_markdown_includes_polished_and_raw_transcripts(self) -> None:
         segments = [WhisperLiveSegment(0.0, 2.0, "原始字幕", True)]
@@ -232,6 +302,162 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
             self.assertIn("更新状态：final", markdown)
             self.assertIn("最终句", markdown)
             self.assertEqual(len(fake_qwen.calls), 2)
+
+    def test_periodic_markdown_update_reports_recent_segments(self) -> None:
+        fake_qwen = FakeMarkdownPolisher()
+        calls: list[dict[str, object]] = []
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "lecture.wav"
+            input_path.write_bytes(b"")
+            output_path = make_markdown_output_path(Path(tmpdir), input_path)
+
+            def on_update(
+                markdown: str,
+                segments: list[WhisperLiveSegment],
+                update_status: str,
+                sequence: int,
+                output_path: Path,
+                recent_segments: list[WhisperLiveSegment],
+            ) -> None:
+                calls.append(
+                    {
+                        "markdown": markdown,
+                        "segments": list(segments),
+                        "status": update_status,
+                        "sequence": sequence,
+                        "path": output_path,
+                        "recent": list(recent_segments),
+                    }
+                )
+
+            updater = PeriodicMarkdownUpdater(
+                qwen_factory=lambda: fake_qwen,
+                snapshot_segments=lambda: [],
+                output_path=output_path,
+                input_path=input_path,
+                whisper_model="OpenVINO/whisper-large-v3-turbo-fp16-ov",
+                domain_terms=[],
+                max_new_tokens=128,
+                update_every_seconds=0,
+                min_update_segments=1,
+                on_markdown_update=on_update,
+            )
+            first = [
+                WhisperLiveSegment(0.0, 1.0, "第一句", True),
+                WhisperLiveSegment(1.0, 2.0, "第二句", True),
+            ]
+            second = [
+                *first,
+                WhisperLiveSegment(2.0, 3.0, "第三句", True),
+            ]
+
+            updater.write_update(first, final=False)
+            updater.write_update(second, final=False)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(
+            [segment.text for segment in calls[0]["recent"]],  # type: ignore[index]
+            ["第一句", "第二句"],
+        )
+        self.assertEqual(
+            [segment.text for segment in calls[1]["recent"]],  # type: ignore[index]
+            ["第三句"],
+        )
+
+    def test_subtitle_snapshot_does_not_call_qwen_or_backend(self) -> None:
+        fake_qwen = FakeMarkdownPolisher()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            input_path = Path(tmpdir) / "lecture.wav"
+            input_path.write_bytes(b"")
+            output_path = make_markdown_output_path(Path(tmpdir), input_path)
+            updater = PeriodicMarkdownUpdater(
+                qwen_factory=lambda: fake_qwen,
+                snapshot_segments=lambda: [],
+                output_path=output_path,
+                input_path=input_path,
+                whisper_model="OpenVINO/whisper-large-v3-turbo-fp16-ov",
+                domain_terms=[],
+                max_new_tokens=128,
+                update_every_seconds=0,
+                min_update_segments=2,
+            )
+
+            written = updater.write_subtitle_snapshot(
+                [WhisperLiveSegment(0.0, 1.0, "字幕草稿", True)]
+            )
+
+            self.assertEqual(written, output_path)
+            self.assertIn("字幕草稿", output_path.read_text(encoding="utf-8"))
+            self.assertEqual(fake_qwen.calls, [])
+
+    def test_whisperlive_segment_id_is_stable(self) -> None:
+        segment = WhisperLiveSegment(1.0, 2.5, "傅里叶变换", True)
+
+        self.assertEqual(whisperlive_segment_id(segment), whisperlive_segment_id(segment))
+        self.assertTrue(whisperlive_segment_id(segment).startswith("seg_whisperlive_"))
+
+    def test_backend_syncer_posts_transcripts_and_notes(self) -> None:
+        sent_events: list[dict] = []
+        sent_notes: list[dict] = []
+
+        def fake_send_event(**kwargs):  # type: ignore[no-untyped-def]
+            sent_events.append(kwargs)
+            return {"status": "accepted"}
+
+        def fake_post_json(base_url, path, body, *, timeout):  # type: ignore[no-untyped-def]
+            sent_notes.append(
+                {
+                    "base_url": base_url,
+                    "path": path,
+                    "body": body,
+                    "timeout": timeout,
+                }
+            )
+            return {"status": "applied", "graph_patch_operations": 2}
+
+        segment = WhisperLiveSegment(1.0, 2.0, "傅里叶变换", True)
+        with patch(
+            "backend.scripts.whisperlive_qwen_markdown.send_event",
+            side_effect=fake_send_event,
+        ), patch(
+            "backend.scripts.whisperlive_qwen_markdown.post_json",
+            side_effect=fake_post_json,
+        ):
+            syncer = BackendSyncer(
+                base_url="http://127.0.0.1:8000",
+                session_id="lec_notes",
+                http_timeout=3.0,
+                post_transcript=True,
+                enable_cloud_graph=True,
+                graph_update_every_seconds=0,
+            )
+            syncer.start()
+            syncer.enqueue_transcript(segment)
+            syncer.enqueue_notes_update(
+                markdown="# 课堂笔记\n\n- 傅里叶变换",
+                segments=[segment],
+                update_status="streaming",
+                sequence=1,
+                output_path=Path("/tmp/notes.md"),
+            )
+            syncer.stop()
+
+        self.assertEqual(len(sent_events), 1)
+        self.assertEqual(sent_events[0]["event_type"], "transcript.segment")
+        self.assertEqual(sent_events[0]["payload"]["segment_id"], whisperlive_segment_id(segment))
+        self.assertTrue(sent_events[0]["payload"]["skip_realtime_extraction"])
+        self.assertEqual(len(sent_notes), 1)
+        self.assertEqual(sent_notes[0]["path"], "/agent/knowledge-tree/update-from-notes")
+        note_body = sent_notes[0]["body"]
+        self.assertEqual(note_body["session_id"], "lec_notes")
+        self.assertEqual(
+            note_body["source_segments"][0]["segment_id"],
+            whisperlive_segment_id(segment),
+        )
+        self.assertEqual(
+            note_body["recent_source_segments"][0]["segment_id"],
+            whisperlive_segment_id(segment),
+        )
 
 
 if __name__ == "__main__":

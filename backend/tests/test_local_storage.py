@@ -244,6 +244,18 @@ class LocalStorageTest(unittest.TestCase):
         self.assertIsNone(detail.post_class_artifacts.summary_markdown)
         self.assertEqual(detail.post_class_artifacts.todos, [])
 
+    def test_save_session_can_persist_structured_notes_markdown(self) -> None:
+        result = self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+            structured_notes_markdown="# 结构化笔记\n\n- 傅里叶变换是重点。",
+        )
+
+        self.assertIn("structured_notes", result.files)
+        detail = self.storage.read_session(self.session_id)
+        self.assertIn("傅里叶变换是重点", detail.structured_notes_markdown)
+
     def test_save_agent_artifacts_writes_post_class_outputs(self) -> None:
         self.storage.save_session(
             session=self._session(),

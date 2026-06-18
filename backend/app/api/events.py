@@ -178,6 +178,9 @@ def _run_realtime_knowledge_extraction(event: RealtimeEvent) -> ExtractionResult
     event remains visible as its own WebSocket update, while any generated
     internal extraction is broadcast as a second ``event.received`` message.
     """
+    if event.payload.get("skip_realtime_extraction") is True:
+        return None
+
     try:
         context = context_manager.get_context(event.session_id)
     except ContextNotFoundError:

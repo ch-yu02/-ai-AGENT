@@ -9,8 +9,8 @@ them in the frontend bundle or browser requests.
 ```bash
 LLM_PROVIDER=deepseek
 LLM_API_KEY=replace_me
-LLM_MODEL=deepseek-chat
-LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-v4-flash
+LLM_BASE_URL=https://api.deepseek.com
 LLM_TIMEOUT_SECONDS=30
 LLM_MAX_RETRIES=1
 ```
@@ -21,12 +21,30 @@ extraction error and skip graph generation.
 
 ## DeepSeek
 
+DeepSeek V4 uses the new model names `deepseek-v4-flash` and
+`deepseek-v4-pro`. Keep the OpenAI-compatible base URL at
+`https://api.deepseek.com`; the backend client appends `/chat/completions`.
+
+Recommended default for realtime classroom extraction:
+
 ```bash
 LLM_PROVIDER=deepseek
 LLM_API_KEY=sk-...
-LLM_MODEL=deepseek-chat
-LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-v4-flash
+LLM_BASE_URL=https://api.deepseek.com
 ```
+
+Use the higher quality V4 Pro model when latency/cost is less important:
+
+```bash
+LLM_PROVIDER=deepseek
+LLM_API_KEY=sk-...
+LLM_MODEL=deepseek-v4-pro
+LLM_BASE_URL=https://api.deepseek.com
+```
+
+Legacy model names `deepseek-chat` and `deepseek-reasoner` are no longer
+recommended for new configuration and are scheduled for retirement by DeepSeek.
 
 ## OpenAI
 

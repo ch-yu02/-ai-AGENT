@@ -8,6 +8,33 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+DEV_COMMAND="${1:-help}"
+
+load_env_file() {
+  local env_file="$ROOT_DIR/.env"
+  if [[ -f "$env_file" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    source "$env_file"
+    set +a
+  fi
+}
+
+should_load_env_file() {
+  case "$DEV_COMMAND" in
+    backend|frontend|dev|mock|audio-stream|whisperlive-server|whisperlive-md|llm-smoke|rebuild-global-index|build)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+if should_load_env_file; then
+  load_env_file
+fi
+
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
@@ -63,6 +90,7 @@ Examples:
   scripts/dev.sh install-whisperlive
   scripts/dev.sh whisperlive-server --port 9090
   scripts/dev.sh whisperlive-md --max-audio-seconds 300 --update-every-seconds 30
+  scripts/dev.sh whisperlive-md --session-id lec_xxx --enable-cloud-graph --max-audio-seconds 300 --update-every-seconds 30 --graph-update-every-seconds 60
   scripts/dev.sh whisperlive-md --domain-terms "线性代数,矩阵,特征值" --max-audio-seconds 60 --update-every-seconds 20
   scripts/dev.sh whisperlive-md --whisperlive-model OpenVINO/whisper-medium-fp16-ov --max-audio-seconds 60 --fast-send
   BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
@@ -146,7 +174,9 @@ run_compile() {
   require_backend_venv
   cd "$ROOT_DIR"
   "$PYTHON_BIN" -m py_compile \
+    backend/app/prompts.py \
     backend/app/main.py \
+    backend/app/agent/*.py \
     backend/app/api/*.py \
     backend/app/core/*.py \
     backend/app/extraction/*.py \
@@ -240,7 +270,7 @@ run_rebuild_global_index() {
   "$PYTHON_BIN" -m backend.scripts.rebuild_global_index "${@:2}"
 }
 
-command="${1:-help}"
+command="$DEV_COMMAND"
 
 case "$command" in
   backend)

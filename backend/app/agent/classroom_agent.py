@@ -42,6 +42,7 @@ from backend.app.skills import (
 from backend.app.storage import LocalStorage
 
 from .intent_router import IntentRouter
+from .knowledge_tree_notes import markdown_knowledge_tree_agent
 from .schemas import (
     AgentArtifact,
     AgentChatRequest,
@@ -74,6 +75,8 @@ class ClassroomAgentData:
     """课堂知识图谱快照。没有图谱时使用空 KnowledgeTree。"""
     data_status: str
     """数据状态，通常是 recording / ended。用于给前端附加提示。"""
+    structured_notes_markdown: str | None = None
+    """Qwen 结构化课堂笔记。录制中来自内存快照，历史课堂来自 structured_notes.md。"""
 
 
 class ClassroomAgent:
@@ -140,6 +143,7 @@ class ClassroomAgent:
                 data.context,
                 data.knowledge_graph,
                 answer_mode=request.answer_mode,
+                structured_notes_markdown=data.structured_notes_markdown,
             )
 
         response = self._response_from_skill_result(request.session_id, intent, result)
@@ -172,6 +176,9 @@ class ClassroomAgent:
             return ClassroomAgentData(
                 context=context,
                 knowledge_graph=graph,
+                structured_notes_markdown=markdown_knowledge_tree_agent.latest_markdown(
+                    session_id
+                ),
                 data_status="recording",
             )
         except ContextNotFoundError:
@@ -187,6 +194,7 @@ class ClassroomAgent:
         return ClassroomAgentData(
             context=self._context_from_history(detail.session.session_id, detail.timeline),
             knowledge_graph=detail.knowledge_graph,
+            structured_notes_markdown=detail.structured_notes_markdown,
             data_status=detail.session.status,
         )
 
@@ -251,7 +259,7 @@ class ClassroomAgent:
         """把技能层来源引用转换成 Agent API 响应模型。"""
         ref_type = (
             ref.type
-            if ref.type in {"segment", "visual", "knowledge_node"}
+            if ref.type in {"segment", "visual", "knowledge_node", "structured_note"}
             else "timeline"
         )
         return AgentSourceRef(type=ref_type, id=ref.id, ts=ref.ts, text=ref.text)

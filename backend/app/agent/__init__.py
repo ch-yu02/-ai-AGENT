@@ -11,6 +11,7 @@ from backend.app.storage import local_storage
 from .classroom_agent import AgentSessionNotFoundError, ClassroomAgent
 from .global_search import GlobalSearchService
 from .intent_router import IntentRouter
+from .knowledge_tree_notes import MarkdownKnowledgeTreeAgent, markdown_knowledge_tree_agent
 from .schemas import (
     AgentArtifact,
     AgentChatRequest,
@@ -20,6 +21,9 @@ from .schemas import (
     GlobalSearchRequest,
     GlobalSearchResponse,
     GlobalSearchSourceRef,
+    NotesKnowledgeTreeUpdateRequest,
+    NotesKnowledgeTreeUpdateResponse,
+    NotesSourceSegment,
 )
 
 
@@ -55,6 +59,11 @@ __all__ = [
     "GlobalSearchService",
     "GlobalSearchSourceRef",
     "IntentRouter",
+    "MarkdownKnowledgeTreeAgent",
+    "NotesKnowledgeTreeUpdateRequest",
+    "NotesKnowledgeTreeUpdateResponse",
+    "NotesSourceSegment",
     "classroom_agent",
     "global_search_service",
+    "markdown_knowledge_tree_agent",
 ]
