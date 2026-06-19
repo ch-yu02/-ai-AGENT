@@ -17,7 +17,7 @@
 ```text
 contract_version: 0.1.0
 status: MVP integration contract
-last_updated: 2026-06-13
+last_updated: 2026-06-19
 ```
 
 当前外部模块只需要向后端发送两类实时输入：
@@ -48,9 +48,9 @@ POST /events
 
 ## 2. 集成原则
 
-### 2.1 课堂必须先由前端创建
+### 2.1 课堂创建与 session_id
 
-其他模块不要自己创建课堂。课堂开始由前端手动发起：
+推荐生产/硬件联调流程仍由前端开始课堂：
 
 ```text
 POST /sessions/start
@@ -59,6 +59,17 @@ POST /sessions/start
 前端拿到 `session_id` 后，再把它提供给 ASR、OCR/VLM 或 mock sender。
 
 其他模块发送事件时必须带同一个 `session_id`。
+
+本地测试脚本已有自动接入能力：
+
+```text
+GET /sessions/recording
+```
+
+`audio-stream` 和 `whisperlive-md` 默认会尝试接入最新录制中课堂；如果没有
+可用课堂，可自动创建测试课堂。因此本地测试通常不再需要手动复制
+`session_id`。真实硬件或外部服务接入时，仍建议显式使用前端创建的
+`session_id`，便于课堂归属、权限和问题排查。
 
 ### 2.2 只向 recording 状态课堂写入
 
@@ -207,7 +218,7 @@ ClassroomContext.timeline
 
 ```text
 实时字幕区
-课堂时间线
+内部 timeline 状态（当前主界面不再单独显示事件面板）
 ```
 
 ### 4.2 最小可用 payload
@@ -318,7 +329,7 @@ ClassroomContext.timeline
 
 ```text
 图片 / OCR / VLM 面板
-课堂时间线
+内部 timeline 状态（当前主界面不再单独显示事件面板）
 ```
 
 ### 5.2 当前图片传输约定
@@ -357,6 +368,15 @@ GET /sessions/{session_id}/images/{image_id}
 ```
 
 后端只服务课堂目录下的图片文件，不直接暴露任意本机绝对路径。
+
+当前边界：
+
+- EDU-Mate 后端不直接采集摄像头画面，也不在本仓库内执行 OCR/VLM 推理。
+- 相机、截图、OCR、VLM 属于外部采集/算法模块；它们通过图片上传接口和
+  `image.capture` 把结果同步进课堂。
+- `image.capture` 里的 `ocr_text` / `caption` 会进入前端视觉区、历史文件、
+  Agent/RAG 来源，以及内部知识抽取提示词。
+- 图谱节点/边如果来自图片，会通过 `source_visual_ids` 关联已有 `image_id`。
 
 ### 5.3 最小可用 payload
 
@@ -468,7 +488,7 @@ ClassroomContext.timeline
 
 ```text
 知识图谱面板
-课堂时间线
+内部 timeline 状态（当前主界面不再单独显示事件面板）
 ```
 
 ### 6.2 最小可用 payload
@@ -612,12 +632,16 @@ extracts
 - 如果关系引用的实体不在 `entities` 中，后端会创建占位节点。
 - 实体去重按 `name.strip().lower()` 进行。
 
-### 6.7 内部知识抽取触发时机建议
+### 6.7 内部知识抽取触发时机
 
-推荐：
+外部模块不需要控制知识抽取触发。当前后端会在接收字幕或视觉事件后，根据
+内部批量策略决定是否触发 LLM-backed 知识抽取；结束课堂前也会再运行一次
+批量抽取。
+
+调试或自定义内部模块时建议：
 
 ```text
-每 1 到 3 个 transcript.segment 后触发一次内部 knowledge.extraction
+每几个稳定 transcript.segment 后触发一次内部 knowledge.extraction
 ```
 
 或：
@@ -702,6 +726,20 @@ curl -X POST http://127.0.0.1:8000/events \
 知识抽取可以滞后于 ASR/OCR，但这是 EDU-Mate 后端内部流程。外部模块只需
 保证 ASR/OCR 输入携带稳定 ID 和时间戳。
 
+如果使用当前 WhisperLive/Qwen 笔记链路，还会额外出现：
+
+```text
+WhisperLive 字幕草稿
+→ 本地 Qwen 定期维护 structured_notes.md
+→ POST /agent/knowledge-tree/update-from-notes
+→ 云端 notes-agent 生成内部 knowledge.extraction
+→ KnowledgeGraphManager 更新图谱
+→ final 快照可由云端 notes-agent 生成 session_title/course 并广播 session.updated
+```
+
+本地 Qwen 当前只负责结构化课堂笔记，不再润色或替换前端实时字幕；前端字幕
+展示的是 ASR/WhisperLive 发送的 `transcript.segment`。
+
 ## 8. 硬件组对接约定
 
 ### 8.1 后端地址
@@ -724,11 +762,19 @@ BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
 http://{backend_lan_ip}:8000
 ```
 
-### 8.2 图片路径
+### 8.2 图片上传与路径
 
-MVP 阶段只约定路径，不约定上传协议。
+后端已经支持图片 bytes 上传：
 
-硬件组需要确认：
+```text
+PUT /sessions/{session_id}/images/{image_id}
+Content-Type: image/jpeg | image/png | image/webp
+```
+
+响应中的 `image_path` 可直接放入后续 `image.capture.payload.image_path`。
+推荐硬件/相机模块优先使用该方式，避免后端无法读取设备本地绝对路径。
+
+如果仅发送路径，硬件组需要确认：
 
 ```text
 图片由谁保存？
@@ -737,7 +783,7 @@ MVP 阶段只约定路径，不约定上传协议。
 前端是否需要直接展示原图？
 ```
 
-若后端无法读取硬件本地路径，应新增图片上传接口或共享目录。
+若后端无法读取硬件本地路径，应改用上传接口或共享目录。
 
 ### 8.3 设备 ID
 
@@ -848,7 +894,7 @@ KnowledgeExtractionEvent
 
 ASR 组：
 
-- [ ] 能拿到前端创建的 `session_id`
+- [ ] 能拿到前端创建的 `session_id`，或本地脚本已自动接入 recording session
 - [ ] 发送 `transcript.segment`
 - [ ] `text` 为 UTF-8
 - [ ] `start_ts` / `end_ts` 是课堂相对秒数
@@ -880,7 +926,7 @@ EDU-Mate 知识抽取模块：
 
 前端组：
 
-- [ ] 前端先创建课堂
+- [ ] 前端可创建课堂，也可接入已有 recording 课堂
 - [ ] 页面显示 `session_id`
 - [ ] WebSocket 已连接
 - [ ] 能展示 ASR、OCR/VLM 和内部知识抽取产生的图谱更新
@@ -931,9 +977,8 @@ curl -X POST http://127.0.0.1:8000/events \
   }'
 ```
 
-4. EDU-Mate 内部知识抽取模块生成知识抽取。
-
-在内部模块尚未实现时，可以临时使用以下调试请求模拟内部结果：
+4. EDU-Mate 内部 LLM 知识抽取模块会按批次生成知识抽取。也可以临时使用
+以下调试请求模拟内部结果：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/events \
@@ -965,5 +1010,5 @@ curl -X POST http://127.0.0.1:8000/events \
 字幕：傅里叶变换可以把时域信号转换到频域。
 OCR：X(f)=∫x(t)e^{-j2πft}dt
 知识图谱：傅里叶变换 -> 频域
-时间线：3 条记录
+内部 timeline 状态：记录字幕、图片和知识抽取事件
 ```

@@ -117,6 +117,30 @@ Content-Type: application/json
 }
 ```
 
+### PATCH /sessions/{session_id}
+
+更新课堂标题和课程名称。用于前端手动改名，也用于 WhisperLive/Qwen 最终笔记
+生成后由云端 notes-agent 把推断出的课堂名称同步到后端。本地 Qwen 只负责
+结构化笔记，不负责最终课堂命名。
+
+请求体：
+
+```json
+{
+  "title": "傅里叶变换专题",
+  "course": "信号与系统"
+}
+```
+
+字段说明：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `title` | string | 否 | 新课堂标题；传空字符串会返回 400 |
+| `course` | string/null | 否 | 新课程名称；传 `null` 或空字符串表示清空课程名称 |
+
+响应体：更新后的 `LectureSession`。录制中的课堂会广播 `session.updated`。
+
 ### GET /sessions/{session_id}
 
 读取课堂元信息。优先读取内存中的课堂；如果后端重启导致内存丢失，会回退
@@ -164,6 +188,37 @@ Content-Type: application/json
 }
 ```
 
+### GET /sessions/recording
+
+读取当前后端内存中仍处于 `recording` 状态的课堂，按开始时间倒序返回。
+
+用途：
+
+- 本地音频/WhisperLive 联调脚本自动接入前端已经开始的课堂。
+- 前端接入脚本自动创建或正在录制的测试课堂。
+- 避免每次测试都手动复制 `session_id`。
+
+响应状态码：`200 OK`
+
+响应体：
+
+```json
+[
+  {
+    "session_id": "lec_20260618_034336_c171e7e5",
+    "title": "本地音频测试课堂",
+    "course": null,
+    "teacher": null,
+    "start_time": "2026-06-18T03:43:36.000000+00:00",
+    "end_time": null,
+    "status": "recording",
+    "language": "zh-CN",
+    "created_by": "student",
+    "device_id": null
+  }
+]
+```
+
 ### GET /sessions/{session_id}/history
 
 读取一节已保存课堂的完整历史内容，用于历史回放、课后技能和总结页面。
@@ -176,15 +231,31 @@ Content-Type: application/json
 | --- | --- | --- |
 | `session` | `LectureSession` | 课堂元信息 |
 | `transcript_markdown` | string | `transcript.md` 的完整内容 |
+| `structured_notes_markdown` | string/null | `structured_notes.md` 的完整内容；旧课堂可能为空 |
 | `timeline` | `TimelineItem[]` | `timeline.json` 的时间线条目 |
 | `knowledge_graph` | `KnowledgeTree` | `knowledge_graph.json` 的图谱快照 |
 | `storage_path` | string | 本地历史课堂目录 |
+| `post_class_artifacts` | object | `summary.md`、`todos.json`、`quiz.json`、Agent artifact 和消息记录 |
 
 错误：
 
 | 状态码 | 场景 |
 | --- | --- |
 | `404` | 本地历史课堂不存在或缺少必要文件 |
+
+### DELETE /sessions/{session_id}/history
+
+删除一节已保存课堂的本地历史目录。只影响磁盘历史数据，不会把已经结束的
+内存课堂恢复或重开。
+
+响应：
+
+```json
+{
+  "status": "deleted",
+  "session_id": "lec_20260618_034336_c171e7e5"
+}
+```
 
 ### POST /sessions/{session_id}/end
 
@@ -194,9 +265,13 @@ Content-Type: application/json
 
 1. 读取课堂上下文。
 2. 读取知识图谱。
-3. 将 session 状态改为 `ended`。
-4. 保存本地文件。
-5. 通过 WebSocket 广播 `session.ended`。
+3. 结束前运行一次内部 LLM 知识抽取；失败只进入 warning/error，不阻塞保存。
+4. 将 session 状态改为 `ended`。
+5. 保存本地文件，包括 `structured_notes.md`（如果录制中收到过结构化笔记）。
+6. 生成并保存课后产物 `summary.md`、`todos.json`。
+7. 如果启用 LlamaIndex，构建单节课 RAG 索引。
+8. 通过 WebSocket 广播 `session.ended`，其中包含保存路径、课后产物路径、
+   RAG 索引状态和知识抽取结果摘要。
 
 响应状态码：`200 OK`
 
@@ -259,6 +334,8 @@ Content-Type: application/json
 说明：
 
 - `strict` 是默认答疑模式，适合复习、笔记和考试场景。
+- `strict` 有课堂来源且配置 LLM 时，会让模型把来源整理成自然回答；提示词
+  禁止使用来源外信息。未配置或失败时回退为检索摘要。
 - `grounded` 仍要求先找到课堂来源；没有课堂依据时不会退化成开放域问答。
 - `summary` / `todos` / `quiz` 会忽略 `answer_mode`，继续由各自技能控制是否使用 LLM。
 
@@ -293,6 +370,145 @@ scripts/dev.sh rebuild-global-index --llamaindex
 
 不带 `--llamaindex` 时只重建可审计的 `documents.json` 快照；带参数时会同时
 尝试重建 `data/indexes/global/llama_index/`。
+
+### POST /agent/review
+
+基于跨课堂检索来源做课后复习问答。请求体与 `/agent/search` 相同，返回
+同样的 `GlobalSearchResponse`。区别是：如果已配置 LLM，后端会把命中的
+历史课堂来源整理成自然复习回答；未配置或失败时回退为搜索摘要，并在
+`warnings` 中说明。
+
+```json
+{
+  "query": "复习采样定理",
+  "course": "通信原理",
+  "limit": 8
+}
+```
+
+### GET /agent/courses
+
+按课程聚合已保存历史课堂，供课后复习入口使用。
+
+响应：
+
+```json
+{
+  "courses": [
+    {
+      "course": "通信原理",
+      "session_count": 3,
+      "latest_session_id": "lec_20260618_034336_c171e7e5",
+      "latest_title": "通信原理第8讲",
+      "latest_start_time": "2026-06-18T03:43:36+08:00",
+      "node_count": 18,
+      "edge_count": 12
+    }
+  ],
+  "warnings": []
+}
+```
+
+### GET /agent/courses/{course}/knowledge-tree
+
+合并同一课程下多节历史课堂的知识图谱，按节点 label 和边关系去重。该接口
+返回的是课后复习用的合并快照，不会修改原始课堂历史文件。
+
+响应核心字段：
+
+- `course`：课程名。
+- `session_count`：参与合并的历史课堂数量。
+- `knowledge_graph`：合并后的 `KnowledgeTree`。
+- `warnings`：损坏历史目录等非致命提示。
+
+### POST /agent/knowledge-tree/update-from-notes
+
+用结构化 Markdown 课堂笔记更新录制中课堂的知识图谱。
+
+这是 WhisperLive/Qwen 本地笔记链路对接云端知识树 Agent 的入口：
+
+```text
+WhisperLive 字幕草稿 -> 本地 Qwen structured_notes.md
+-> POST /agent/knowledge-tree/update-from-notes
+-> 云端 LLM 生成 KnowledgeExtraction
+-> 复用 knowledge.extraction 事件管线更新图谱和前端
+-> final 快照可同时返回 session_title/course 并广播 session.updated
+```
+
+请求：
+
+```json
+{
+  "session_id": "lec_20260618_034336_c171e7e5",
+  "snapshot_id": "notes_000003_streaming",
+  "sequence": 3,
+  "markdown": "# 课堂笔记\n\n## 课堂要点\n- 傅里叶变换用于频域分析。",
+  "markdown_hash": "optional_hash",
+  "source_segments": [
+    {
+      "segment_id": "seg_001",
+      "start_ts": 1.0,
+      "end_ts": 4.2,
+      "text": "傅里叶变换可以把时域信号转换到频域。"
+    }
+  ],
+  "recent_source_segments": [
+    {
+      "segment_id": "seg_001",
+      "start_ts": 1.0,
+      "end_ts": 4.2,
+      "text": "傅里叶变换可以把时域信号转换到频域。"
+    }
+  ],
+  "update_status": "streaming"
+}
+```
+
+字段：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `session_id` | string | 是 | 必须是录制中课堂 |
+| `snapshot_id` | string | 是 | 本次笔记快照 ID |
+| `sequence` | number | 否 | 快照序号，用于日志和排查乱序 |
+| `markdown` | string | 是 | 当前完整结构化课堂笔记 |
+| `markdown_hash` | string/null | 否 | 去重 hash；为空时后端按 Markdown 文本计算 |
+| `source_segments` | object[] | 否 | 生成笔记时用到的全量字幕来源 |
+| `recent_source_segments` | object[] | 否 | 本次增量优先依据的近期字幕；为空时回退到 `source_segments` |
+| `update_status` | string | 否 | `streaming` / `final` |
+
+说明：
+
+- `streaming` 快照主要用于增量图谱更新。
+- `final` 快照可同时让云端 notes-agent 根据课堂内容生成短标题和课程名。
+- 本地 Qwen 不再润色或替换前端实时字幕；前端字幕显示 WhisperLive/ASR 原始
+  `transcript.segment`。
+
+响应：
+
+```json
+{
+  "status": "applied",
+  "session_id": "lec_20260618_034336_c171e7e5",
+  "snapshot_id": "notes_000003_streaming",
+  "markdown_hash": "computed_or_supplied_hash",
+  "extraction_id": "ext_notes_lec_xxx_notes_000003_streaming_abcd1234",
+  "graph_patch_operations": 4,
+  "warnings": []
+}
+```
+
+`status` 含义：
+
+| status | 说明 |
+| --- | --- |
+| `applied` | 生成了有效抽取，并产生图谱增量 |
+| `skipped` | 内容重复、没有新增知识或没有图谱操作 |
+| `failed` | 云端 LLM 调用或 schema 校验失败 |
+
+成功产生图谱增量时，后端还会广播标准 `event.received` WebSocket 消息，
+`event_type` 为 `knowledge.extraction`，前端继续按现有 `graph_patch`
+逻辑更新图谱。
 
 ## 5. 实时事件接口
 
@@ -460,6 +676,22 @@ GET /sessions/{session_id}/images/{image_id}
 
 后端只服务 `data/sessions/{session_id}/images/` 下的文件，不会直接暴露任意
 本机绝对路径。
+
+当前图像处理链路：
+
+1. 相机/硬件/OCR/VLM 模块可先上传原始图片 bytes，得到受控的 `local://`
+   `image_path`。
+2. 模块发送 `image.capture`，携带 `image_path`、`capture_ts`、`ocr_text` 和/或
+   `caption`。
+3. 后端把视觉事件写入 `ClassroomContext.visuals` 和 timeline，并通过
+   WebSocket 推给前端视觉/OCR 区。
+4. 内部实时抽取或课后抽取可读取最近的 OCR/caption，与字幕一起生成
+   `knowledge.extraction`；生成的节点/边会通过 `source_visual_ids` 关联图片。
+5. Agent/RAG 检索会把视觉来源作为短 source ref 返回；前端展示 OCR/caption
+   摘录，不会直接展开任意本机路径。
+
+当前项目还不负责相机采集、OCR 或 VLM 推理本身；这些能力作为外部模块通过
+`PUT /sessions/{session_id}/images/{image_id}` 和 `image.capture` 接入。
 
 ### 6.3 knowledge.extraction
 
@@ -637,11 +869,6 @@ entities 中没有出现的实体，后端会自动创建占位节点。
             "importance": 0.92,
             "source_refs": [
               {
-                "type": "event",
-                "id": "ext_001",
-                "ts": null
-              },
-              {
                 "type": "segment",
                 "id": "seg_001",
                 "ts": 1.0
@@ -660,7 +887,8 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 
 说明：
 
-- `context_update.timeline_item` 可直接追加到前端时间线。
+- `context_update.timeline_item` 可写入前端本地状态；当前主界面不再单独显示事件面板，
+  但 timeline 仍用于历史保存和后续定位。
 - `graph_patch` 只有 `knowledge.extraction` 事件会产生；字幕和图片事件通常为 `null`。
 - 前端应按 `graph_patch.operations` 顺序应用图谱变更。
 - 字幕或图片事件如果触发内部批量抽取，`data.knowledge_extraction` 会包含
@@ -672,7 +900,7 @@ entities 中没有出现的实体，后端会自动创建占位节点。
 ```json
 {
   "session_id": "lec_20260605_010203_ab12cd34",
-  "provider": "rule",
+  "provider": "llm",
   "extraction_count": 1,
   "processed_source_ids": ["seg_001", "seg_002", "seg_003"],
   "errors": [],
@@ -718,8 +946,24 @@ LLM_MAX_RETRIES
       "files": {
         "metadata": "data/sessions/lec_20260605_010203_ab12cd34/metadata.json",
         "transcript": "data/sessions/lec_20260605_010203_ab12cd34/transcript.md",
+        "structured_notes": "data/sessions/lec_20260605_010203_ab12cd34/structured_notes.md",
         "timeline": "data/sessions/lec_20260605_010203_ab12cd34/timeline.json",
         "knowledge_graph": "data/sessions/lec_20260605_010203_ab12cd34/knowledge_graph.json"
+      },
+      "post_class_files": {
+        "summary": "data/sessions/lec_20260605_010203_ab12cd34/summary.md",
+        "todos": "data/sessions/lec_20260605_010203_ab12cd34/todos.json"
+      },
+      "rag_index": {
+        "enabled": false,
+        "status": "skipped"
+      },
+      "knowledge_extraction": {
+        "session_id": "lec_20260605_010203_ab12cd34",
+        "provider": "llm",
+        "extraction_count": 1,
+        "processed_source_ids": ["seg_001", "seg_002"],
+        "errors": []
       }
     }
   },
@@ -762,11 +1006,6 @@ LLM_MAX_RETRIES
       "relation": "maps_to",
       "source_refs": [
         {
-          "type": "event",
-          "id": "ext_001",
-          "ts": null
-        },
-        {
           "type": "segment",
           "id": "seg_001",
           "ts": 1.0
@@ -788,8 +1027,14 @@ LLM_MAX_RETRIES
 ```text
 data/sessions/{session_id}/metadata.json
 data/sessions/{session_id}/transcript.md
+data/sessions/{session_id}/structured_notes.md
 data/sessions/{session_id}/timeline.json
 data/sessions/{session_id}/knowledge_graph.json
+data/sessions/{session_id}/summary.md
+data/sessions/{session_id}/todos.json
+data/sessions/{session_id}/quiz.json
+data/sessions/{session_id}/agent_messages.json
+data/sessions/{session_id}/agent_artifacts.json
 ```
 
 文件说明：
@@ -798,15 +1043,14 @@ data/sessions/{session_id}/knowledge_graph.json
 | --- | --- |
 | `metadata.json` | `LectureSession` |
 | `transcript.md` | 人可读 Markdown 字幕 |
+| `structured_notes.md` | WhisperLive/Qwen 链路实时维护的结构化课堂笔记，可能不存在 |
 | `timeline.json` | `TimelineItem[]` |
 | `knowledge_graph.json` | `KnowledgeTree` |
-
-当前未实现历史读取 API。后续建议新增：
-
-```text
-GET /history
-GET /history/{session_id}
-```
+| `summary.md` | 课后总结，结束课堂时自动生成 |
+| `todos.json` | 课后待办候选，结束课堂时自动生成 |
+| `quiz.json` | 用户主动通过 Agent 生成自测题后保存 |
+| `agent_messages.json` | 历史 Agent 对话 |
+| `agent_artifacts.json` | Agent 生成的结构化产物快照 |
 
 ## 10. Mock Sender
 
@@ -852,7 +1096,57 @@ mock sender 当前会模拟：
 4. 发送多条模拟的内部 `knowledge.extraction`，驱动知识图谱增量更新。
 5. 默认结束课堂并保存本地文件；加 `--no-end` 时保留 recording 状态。
 
-## 11. 前端接入建议
+## 11. 本地音频与 WhisperLive 联调脚本
+
+### audio-stream
+
+`audio-stream` 是 OpenVINO Whisper/Qwen 本地测试链路，适合不启动
+WhisperLive 服务时快速验证：
+
+```bash
+scripts/dev.sh audio-stream --max-audio-seconds 120 --whisper-device GPU --qwen-device CPU
+```
+
+默认会尝试自动接入 `GET /sessions/recording` 返回的最新录制课堂；如果没有
+可用课堂，会自动调用 `POST /sessions/start` 创建测试课堂。也可以显式指定：
+
+```bash
+scripts/dev.sh audio-stream --session-id lec_xxx --max-audio-seconds 120
+```
+
+### whisperlive-md
+
+`whisperlive-md` 是当前主要的本地课堂笔记联调链路：
+
+```bash
+scripts/dev.sh whisperlive-server --port 9090
+scripts/dev.sh whisperlive-md --max-audio-seconds 300 --update-every-seconds 30
+```
+
+启用云端知识图谱更新：
+
+```bash
+scripts/dev.sh whisperlive-md \
+  --enable-cloud-graph \
+  --max-audio-seconds 300 \
+  --update-every-seconds 30 \
+  --graph-update-every-seconds 60
+```
+
+行为：
+
+1. WhisperLive 生成字幕草稿。
+2. 本地 Qwen 定期根据字幕草稿维护结构化 Markdown 课堂笔记。
+3. 如果绑定了 session，Markdown 保存到
+   `data/sessions/{session_id}/structured_notes.md`。
+4. 启用 `--enable-cloud-graph` 后，脚本定期调用
+   `POST /agent/knowledge-tree/update-from-notes`。
+5. 后端 notes-agent 生成 `knowledge.extraction`，前端通过标准 `graph_patch`
+   更新知识图谱。
+6. final 快照如果返回 `session_title` / `course`，后端会更新课堂元信息并
+   广播 `session.updated`。
+
+## 12. 前端接入建议
 
 实时课堂页面建议流程：
 
@@ -860,7 +1154,8 @@ mock sender 当前会模拟：
 2. 用返回的 `session_id` 连接 `WS /ws/{session_id}`。
 3. 收到 `ws.connected` 后展示连接成功状态。
 4. 收到 `event.received` 后：
-   - 把 `context_update.timeline_item` 追加到时间线。
+   - 把 `context_update.timeline_item` 写入本地状态；当前主界面不再单独显示事件面板，
+     但 timeline 仍用于历史保存和后续定位。
    - 如果 `event_type` 是 `transcript.segment`，更新字幕区。
    - 如果 `event_type` 是 `image.capture`，更新图片/OCR 区。
    - 如果 `graph_patch` 不为 `null`，应用知识图谱增量更新。

@@ -18,6 +18,7 @@ class FakeLLMClient:
     def __init__(self, payload: dict[str, Any] | None = None, error: Exception | None = None):
         self.payload = payload or {}
         self.error = error
+        self.calls: list[dict[str, Any]] = []
 
     def complete_json(
         self,
@@ -26,6 +27,13 @@ class FakeLLMClient:
         *,
         temperature: float = 0.1,
     ) -> dict[str, Any]:
+        self.calls.append(
+            {
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "temperature": temperature,
+            }
+        )
         if self.error is not None:
             raise self.error
         return self.payload
@@ -34,8 +42,10 @@ class FakeLLMClient:
 class FakeQueryService:
     def __init__(self, result: QueryResult) -> None:
         self.result = result
+        self.calls: list[dict[str, Any]] = []
 
     def query(self, prompt, documents, limit=5):  # type: ignore[no-untyped-def]
+        self.calls.append({"prompt": prompt, "documents": documents, "limit": limit})
         return self.result
 
 
@@ -197,6 +207,103 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual(result.source_refs[0].id, "seg_001")
         self.assertTrue(any("模型通用知识补充" in warning for warning in result.warnings))
 
+    def test_qa_strict_mode_uses_llm_with_source_constraints(self) -> None:
+        llm_client = FakeLLMClient(
+            {
+                "answer": "根据课堂资料，采样定理描述连续信号采样恢复条件。"
+            }
+        )
+        qa = QaSkill(
+            query_service=FakeQueryService(
+                QueryResult(
+                    answer="我在课堂资料中找到这些相关内容：采样定理描述连续信号采样恢复条件。",
+                    source_refs=[
+                        RagSourceRef(
+                            type="segment",
+                            id="seg_001",
+                            ts=1.0,
+                            text="采样定理描述连续信号采样恢复条件。",
+                        )
+                    ],
+                    warnings=[],
+                )
+            ),
+            llm_client=llm_client,
+        )
+
+        result = qa.run(
+            self.session_id,
+            "采样定理是什么？",
+            self.context,
+            self.graph,
+        )
+
+        self.assertIn("根据课堂资料", result.answer)
+        self.assertEqual(result.source_refs[0].id, "seg_001")
+        self.assertIn("禁止使用来源外", llm_client.calls[0]["system_prompt"])
+
+    def test_qa_strict_mode_falls_back_when_llm_fails(self) -> None:
+        qa = QaSkill(
+            query_service=FakeQueryService(
+                QueryResult(
+                    answer="我在课堂资料中找到这些相关内容：采样定理。",
+                    source_refs=[
+                        RagSourceRef(
+                            type="segment",
+                            id="seg_001",
+                            ts=1.0,
+                            text="采样定理。",
+                        )
+                    ],
+                    warnings=[],
+                )
+            ),
+            llm_client=FakeLLMClient(error=CloudLLMError("timeout")),
+        )
+
+        result = qa.run(
+            self.session_id,
+            "采样定理是什么？",
+            self.context,
+            self.graph,
+        )
+
+        self.assertIn("采样定理", result.answer)
+        self.assertTrue(any("严格问答模型生成失败" in warning for warning in result.warnings))
+
+    def test_qa_strict_mode_rejects_ungrounded_llm_answer(self) -> None:
+        qa = QaSkill(
+            query_service=FakeQueryService(
+                QueryResult(
+                    answer="我在课堂资料中找到这些相关内容：作业是完成第三题。",
+                    source_refs=[
+                        RagSourceRef(
+                            type="segment",
+                            id="seg_001",
+                            ts=1.0,
+                            text="作业是完成第三题。",
+                        )
+                    ],
+                    warnings=[],
+                )
+            ),
+            llm_client=FakeLLMClient(
+                {
+                    "answer": "采样定理要求采样频率满足奈奎斯特条件。"
+                }
+            ),
+        )
+
+        result = qa.run(
+            self.session_id,
+            "采样定理是什么？",
+            self.context,
+            self.graph,
+        )
+
+        self.assertIn("作业是完成第三题", result.answer)
+        self.assertTrue(any("未通过来源校验" in warning for warning in result.warnings))
+
     def test_qa_grounded_mode_falls_back_without_llm(self) -> None:
         qa = QaSkill(
             query_service=FakeQueryService(
@@ -228,6 +335,34 @@ class SkillsTest(unittest.TestCase):
 
         self.assertIn("采样定理", result.answer)
         self.assertTrue(any("未配置 LLM" in warning for warning in result.warnings))
+
+    def test_qa_limits_displayed_source_refs(self) -> None:
+        query_service = FakeQueryService(
+            QueryResult(
+                answer="根据课堂资料找到多个来源。",
+                source_refs=[
+                    RagSourceRef(
+                        type="segment",
+                        id=f"seg_{index:03d}",
+                        ts=float(index),
+                        text=f"来源 {index}",
+                    )
+                    for index in range(5)
+                ],
+                warnings=[],
+            )
+        )
+        qa = QaSkill(query_service=query_service, llm_client=None)
+
+        result = qa.run(
+            self.session_id,
+            "采样定理为什么重要？",
+            self.context,
+            self.graph,
+        )
+
+        self.assertEqual(query_service.calls[0]["limit"], 3)
+        self.assertEqual([ref.id for ref in result.source_refs], ["seg_000", "seg_001", "seg_002"])
 
 
 if __name__ == "__main__":

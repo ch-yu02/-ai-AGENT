@@ -2,6 +2,8 @@ import { requestJson } from "./api";
 import type {
   AgentChatRequest,
   AgentChatResponse,
+  CourseKnowledgeTreeResponse,
+  CourseListResponse,
   GlobalSearchRequest,
   GlobalSearchResponse,
 } from "../types/agent";
@@ -33,4 +35,28 @@ export function searchAcrossClassrooms(
       ...request,
     }),
   });
+}
+
+export function reviewAcrossClassrooms(
+  request: GlobalSearchRequest,
+): Promise<GlobalSearchResponse> {
+  return requestJson<GlobalSearchResponse>("/agent/review", {
+    method: "POST",
+    body: JSON.stringify({
+      limit: 8,
+      ...request,
+    }),
+  });
+}
+
+export function listCourseSummaries(): Promise<CourseListResponse> {
+  return requestJson<CourseListResponse>("/agent/courses");
+}
+
+export function getMergedCourseKnowledgeTree(
+  course: string,
+): Promise<CourseKnowledgeTreeResponse> {
+  return requestJson<CourseKnowledgeTreeResponse>(
+    `/agent/courses/${encodeURIComponent(course)}/knowledge-tree`,
+  );
 }

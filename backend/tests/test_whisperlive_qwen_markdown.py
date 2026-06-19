@@ -35,11 +35,9 @@ class FakeMarkdownPolisher:
     ) -> MarkdownResult:
         self.calls.append(list(segments))
         return MarkdownResult(
-            title="实时课堂笔记",
             summary=["记录课堂内容和重点"],
             sections=[("课堂重点", [segment.text for segment in segments])],
             keywords=domain_terms,
-            clean_transcript=[segment.text for segment in segments],
         )
 
 
@@ -107,8 +105,9 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         self.assertEqual(terms, ["线性代数", "薛定谔方程", "傅里叶变换"])
         self.assertIn("线性代数、薛定谔方程、傅里叶变换", prompt)
         self.assertIn("Few-shot", prompt)
-        self.assertIn("课堂语音转录助手", prompt)
+        self.assertIn("课堂笔记整理助手", prompt)
         self.assertIn("课堂内容、重点", prompt)
+        self.assertNotIn("clean_transcript", prompt)
 
     def test_markdown_output_path_uses_session_structured_notes_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -145,8 +144,9 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
             [WhisperLiveSegment(0.0, 1.0, "傅里叶变换", True)]
         )
 
-        self.assertEqual(result.title, "WhisperLive 本地课堂笔记")
-        self.assertEqual(result.clean_transcript, ["傅里叶变换"])
+        self.assertEqual(result.summary, [])
+        self.assertEqual(result.sections, [])
+        self.assertEqual(result.keywords, [])
 
     def test_normalize_markdown_result_uses_transcript_fallbacks(self) -> None:
         source_segments = [
@@ -155,7 +155,6 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         ]
         result = normalize_markdown_result(
             {
-                "title": "  课堂笔记  ",
                 "summary": ["傅里叶变换", "傅里叶变换", ""],
                 "sections": [{"heading": "", "bullets": ["跳过"]}],
                 "keywords": ["频域", "频域"],
@@ -163,11 +162,9 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
             source_segments,
         )
 
-        self.assertEqual(result.title, "课堂笔记")
         self.assertEqual(result.summary, ["傅里叶变换"])
         self.assertEqual(result.sections, [("课堂要点", ["傅里叶变换"])])
         self.assertEqual(result.keywords, ["频域"])
-        self.assertEqual(result.clean_transcript, ["同学们好", "今天讲频域"])
 
     def test_enforce_markdown_grounding_drops_hallucinated_notes(self) -> None:
         segments = [
@@ -176,7 +173,6 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         ]
         result = enforce_markdown_grounding(
             MarkdownResult(
-                title="文化渗透",
                 summary=["文化渗透", "民主自由人权"],
                 sections=[
                     (
@@ -188,10 +184,6 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
                     )
                 ],
                 keywords=["文化渗透", "人权"],
-                clean_transcript=[
-                    "文化渗透指的是在中国传教。",
-                    "文化渗透推动了民族意识觉醒。",
-                ],
             ),
             segments=segments,
             domain_terms=[],
@@ -200,65 +192,42 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         self.assertEqual(result.summary, ["文化渗透"])
         self.assertEqual(result.sections, [("文化渗透", ["在中国传教"])])
         self.assertEqual(result.keywords, ["文化渗透"])
-        self.assertEqual(result.clean_transcript, ["文化渗透指的是在中国传教。"])
 
-    def test_clean_transcript_allows_larger_asr_typo_corrections(self) -> None:
-        segments = [
-            WhisperLiveSegment(0.0, 1.0, "欢迎走进中国近现代式钢要", True),
-            WhisperLiveSegment(1.0, 2.0, "期末突击苏晨克", True),
-            WhisperLiveSegment(2.0, 3.0, "这是目前全国高校通用的观光教材", True),
-            WhisperLiveSegment(3.0, 4.0, "咱们今天所有内容严格对标靠电设计", True),
-            WhisperLiveSegment(4.0, 5.0, "直接烤点 重点和得分点", True),
-        ]
-        result = enforce_markdown_grounding(
-            MarkdownResult(
-                title="课堂笔记",
-                summary=[],
-                sections=[],
-                keywords=[],
-                clean_transcript=[
-                    "欢迎走进中国近现代史纲要。",
-                    "期末突击速成课。",
-                    "这是目前全国高校通用的官方教材。",
-                    "咱们今天所有内容严格对标考点设计。",
-                    "直接考点、重点和得分点。",
-                ],
-            ),
-            segments=segments,
-            domain_terms=[],
-        )
-
-        self.assertEqual(
-            result.clean_transcript,
-            [
-                "欢迎走进中国近现代史纲要。",
-                "期末突击速成课。",
-                "这是目前全国高校通用的官方教材。",
-                "咱们今天所有内容严格对标考点设计。",
-                "直接考点、重点和得分点。",
-            ],
-        )
-
-    def test_render_markdown_includes_polished_and_raw_transcripts(self) -> None:
+    def test_render_markdown_includes_notes_and_raw_transcripts(self) -> None:
         segments = [WhisperLiveSegment(0.0, 2.0, "原始字幕", True)]
         markdown = render_markdown(
             MarkdownResult(
-                title="测试标题",
                 summary=["摘要"],
                 sections=[("小节", ["条目"])],
                 keywords=["关键词"],
-                clean_transcript=["润色字幕。"],
             ),
             source_file=Path("/tmp/audio.mp3"),
             whisper_model="OpenVINO/whisper-base-fp16-ov",
             segments=segments,
         )
 
-        self.assertIn("# 测试标题", markdown)
+        self.assertIn("# WhisperLive 本地课堂笔记", markdown)
         self.assertIn("更新状态：final", markdown)
-        self.assertIn("## 润色字幕", markdown)
-        self.assertIn("1. 润色字幕。", markdown)
+        self.assertIn("## WhisperLive 字幕", markdown)
         self.assertIn("`0.00-2.00` (final) 原始字幕", markdown)
+
+    def test_render_markdown_uses_lecture_language_for_static_labels(self) -> None:
+        segments = [WhisperLiveSegment(0.0, 2.0, "Fourier transform maps signals.", True)]
+        markdown = render_markdown(
+            MarkdownResult(
+                summary=["Fourier transform maps signals to frequency domain."],
+                sections=[("Key Points", ["Frequency-domain analysis is discussed."])],
+                keywords=["Fourier transform", "frequency domain"],
+            ),
+            source_file=Path("/tmp/audio.mp3"),
+            whisper_model="OpenVINO/whisper-base-fp16-ov",
+            segments=segments,
+        )
+
+        self.assertIn("# WhisperLive Local Classroom Notes", markdown)
+        self.assertIn("## Summary", markdown)
+        self.assertIn("## Keywords", markdown)
+        self.assertIn("## WhisperLive Subtitles", markdown)
 
     def test_periodic_markdown_updater_writes_same_file(self) -> None:
         fake_qwen = FakeMarkdownPolisher()
@@ -458,7 +427,6 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
             note_body["recent_source_segments"][0]["segment_id"],
             whisperlive_segment_id(segment),
         )
-
 
 if __name__ == "__main__":
     unittest.main()

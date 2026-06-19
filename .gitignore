@@ -12,6 +12,7 @@ __pycache__/
 
 data/sessions/*
 !data/sessions/.gitkeep
+data/indexes/
 data/whisperlive_markdown/
 
 docs/选题.md

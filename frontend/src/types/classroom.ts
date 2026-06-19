@@ -192,7 +192,12 @@ export type ContextUpdate = {
 // 后端 WebSocket 统一消息信封。
 // data 会随 type 不同而变化，后续接 reducer 时再按 type 做窄化解析。
 export type WebSocketMessage = {
-  type: "ws.connected" | "session.started" | "event.received" | "session.ended";
+  type:
+    | "ws.connected"
+    | "session.started"
+    | "session.updated"
+    | "event.received"
+    | "session.ended";
   session_id: string;
   data: Record<string, unknown>;
   created_at: string;

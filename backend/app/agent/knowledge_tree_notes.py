@@ -14,6 +14,10 @@ from typing import Any, Protocol
 from pydantic import ValidationError
 
 from backend.app import prompts
+from backend.app.knowledge_quality import (
+    is_low_value_entity_name,
+    strip_generic_entity_affixes,
+)
 from backend.app.agent.schemas import NotesKnowledgeTreeUpdateRequest
 from backend.app.llm import CloudLLMClient, CloudLLMError, load_llm_settings
 from backend.app.models import KnowledgeExtraction, KnowledgeTree
@@ -38,6 +42,8 @@ class NotesGraphExtractionResult:
 
     extraction: KnowledgeExtraction | None = None
     markdown_hash: str = ""
+    session_title: str | None = None
+    course: str | None = None
     warnings: tuple[str, ...] = ()
     failed: bool = False
 
@@ -47,10 +53,13 @@ class MarkdownKnowledgeTreeAgent:
 
     provider_name = "markdown_cloud_llm"
     MAX_SOURCE_SEGMENT_IDS = 5
+    MAX_ENTITIES_PER_SNAPSHOT = 8
+    MAX_RELATIONS_PER_SNAPSHOT = 10
 
     def __init__(self, llm_client: JsonLLMClient | None = None) -> None:
         self.llm_client = llm_client
         self._processed_hashes: dict[str, set[str]] = {}
+        self._processed_extraction_signatures: dict[str, set[str]] = {}
         self._latest_markdown: dict[str, str] = {}
 
     def has_processed(self, session_id: str, markdown_hash: str) -> bool:
@@ -64,6 +73,7 @@ class MarkdownKnowledgeTreeAgent:
     def reset(self) -> None:
         """Clear in-memory idempotency state. Tests use this between cases."""
         self._processed_hashes.clear()
+        self._processed_extraction_signatures.clear()
         self._latest_markdown.clear()
 
     def latest_markdown(self, session_id: str) -> str | None:
@@ -101,10 +111,11 @@ class MarkdownKnowledgeTreeAgent:
                 self._user_prompt(request, knowledge_graph),
                 temperature=0.1,
             )
-            extraction, warnings = self._validate_payload(
+            extraction, warnings, session_title, course = self._validate_payload(
                 payload,
                 request=request,
                 markdown_hash=markdown_hash,
+                knowledge_graph=knowledge_graph,
             )
         except (CloudLLMError, ValidationError, KeyError, TypeError, ValueError) as exc:
             return NotesGraphExtractionResult(
@@ -113,15 +124,42 @@ class MarkdownKnowledgeTreeAgent:
                 warnings=(f"{exc.__class__.__name__}: {exc}",),
             )
 
+        signature = extraction_signature(extraction)
+        if signature and signature in self._processed_extraction_signatures.get(
+            request.session_id,
+            set(),
+        ):
+            return NotesGraphExtractionResult(
+                markdown_hash=markdown_hash,
+                session_title=session_title,
+                course=course,
+                warnings=tuple(
+                    [
+                        *warnings,
+                        "Graph extraction content already processed; skipped duplicate.",
+                    ]
+                ),
+            )
+
         if not extraction.entities and not extraction.relations:
             return NotesGraphExtractionResult(
                 markdown_hash=markdown_hash,
+                session_title=session_title,
+                course=course,
                 warnings=tuple([*warnings, "No grounded graph items were extracted."]),
             )
+
+        if signature:
+            self._processed_extraction_signatures.setdefault(
+                request.session_id,
+                set(),
+            ).add(signature)
 
         return NotesGraphExtractionResult(
             extraction=extraction,
             markdown_hash=markdown_hash,
+            session_title=session_title,
+            course=course,
             warnings=tuple(warnings),
         )
 
@@ -140,28 +178,34 @@ class MarkdownKnowledgeTreeAgent:
         *,
         request: NotesKnowledgeTreeUpdateRequest,
         markdown_hash: str,
-    ) -> tuple[KnowledgeExtraction, list[str]]:
+        knowledge_graph: KnowledgeTree,
+    ) -> tuple[KnowledgeExtraction, list[str], str | None, str | None]:
         focus_segments = focused_source_segments(request)
         source_ids = [segment.segment_id for segment in focus_segments]
         source_text = grounding_source_text(request)
         source_key = comparable_text(source_text)
         warnings: list[str] = []
+        existing_labels = [node.label for node in knowledge_graph.nodes]
 
         entities, allowed_names = self._grounded_entities(
             payload.get("entities"),
             source_key=source_key,
+            existing_labels=existing_labels,
             warnings=warnings,
         )
+        allowed_names.update(existing_labels)
         relations = self._grounded_relations(
             payload.get("relations"),
             source_key=source_key,
             allowed_names=allowed_names,
+            existing_labels=existing_labels,
             warnings=warnings,
         )
         source_segment_ids = self._valid_source_ids(
             payload.get("source_segment_ids"),
             allowed=source_ids,
         )
+        session_title, course = session_metadata_from_payload(payload)
 
         safe_payload = {
             "extraction_id": str(
@@ -172,17 +216,18 @@ class MarkdownKnowledgeTreeAgent:
             "source_segment_ids": source_segment_ids,
             "source_visual_ids": [],
             "timestamp_range": timestamp_range(request, source_segment_ids),
-            "entities": entities,
-            "relations": relations,
+            "entities": entities[: self.MAX_ENTITIES_PER_SNAPSHOT],
+            "relations": relations[: self.MAX_RELATIONS_PER_SNAPSHOT],
             "importance": coerce_importance(payload.get("importance")),
         }
-        return KnowledgeExtraction.model_validate(safe_payload), warnings
+        return KnowledgeExtraction.model_validate(safe_payload), warnings, session_title, course
 
     def _grounded_entities(
         self,
         value: object,
         *,
         source_key: str,
+        existing_labels: list[str],
         warnings: list[str],
     ) -> tuple[list[dict[str, Any]], set[str]]:
         entities: list[dict[str, Any]] = []
@@ -197,6 +242,10 @@ class MarkdownKnowledgeTreeAgent:
             name = clean_text(item.get("name"))
             if not name:
                 continue
+            if is_low_value_entity_name(name):
+                warnings.append(f"Dropped low-value entity: {name}")
+                continue
+            name = canonical_entity_name(name, existing_labels)
             key = comparable_text(name)
             if key in seen:
                 continue
@@ -224,6 +273,7 @@ class MarkdownKnowledgeTreeAgent:
         *,
         source_key: str,
         allowed_names: set[str],
+        existing_labels: list[str],
         warnings: list[str],
     ) -> list[dict[str, str]]:
         relations: list[dict[str, str]] = []
@@ -240,6 +290,12 @@ class MarkdownKnowledgeTreeAgent:
             relation = clean_relation_label(item.get("relation"), default="related_to")
             if not source or not target:
                 continue
+            if is_low_value_entity_name(source) or is_low_value_entity_name(target):
+                warnings.append(f"Dropped low-value relation endpoints: {source}->{target}")
+                continue
+
+            source = canonical_entity_name(source, existing_labels)
+            target = canonical_entity_name(target, existing_labels)
 
             source, target, relation = normalize_relation_direction(
                 source,
@@ -348,6 +404,29 @@ def extraction_id_for_snapshot(
     return f"ext_notes_{request.session_id}_{slug or request.sequence}_{markdown_hash[:10]}"
 
 
+def extraction_signature(extraction: KnowledgeExtraction) -> str:
+    """Create a content signature that ignores snapshot/source bookkeeping."""
+    entity_keys = sorted(
+        comparable_text(entity.name)
+        for entity in extraction.entities
+        if comparable_text(entity.name)
+    )
+    relation_keys = sorted(
+        (
+            comparable_text(relation.source),
+            comparable_text(relation.target),
+            clean_relation_label(relation.relation, default="related_to"),
+        )
+        for relation in extraction.relations
+        if comparable_text(relation.source) and comparable_text(relation.target)
+    )
+    if not entity_keys and not relation_keys:
+        return ""
+
+    raw = repr((entity_keys, relation_keys))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 def timestamp_range(
     request: NotesKnowledgeTreeUpdateRequest,
     source_segment_ids: list[str] | None = None,
@@ -396,9 +475,53 @@ def clean_text(value: object) -> str:
     return str(value).strip()
 
 
+def clean_optional_metadata(value: object) -> str | None:
+    """Normalize optional cloud-generated session metadata."""
+    text = clean_text(value)
+    if not text:
+        return None
+    if text.lower() in {"null", "none", "unknown", "n/a"}:
+        return None
+    if text in {"未知", "未识别", "未命名课程", "无法判断", "课堂笔记"}:
+        return None
+    return text[:80]
+
+
+def session_metadata_from_payload(payload: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Extract optional title/course metadata from the cloud notes response."""
+    title = clean_optional_metadata(payload.get("session_title") or payload.get("title"))
+    course = clean_optional_metadata(payload.get("course"))
+    return title, course
+
+
 def comparable_text(value: str) -> str:
     """Create a punctuation-insensitive key for grounding checks."""
     return re.sub(r"[\W_]+", "", value.lower(), flags=re.UNICODE)
+
+
+def canonical_entity_name(name: str, existing_labels: list[str]) -> str:
+    """Reuse an existing graph label when the new label is an obvious duplicate."""
+    key = comparable_text(name)
+    if not key:
+        return name
+
+    best_label = name
+    best_score = 0.0
+    for label in existing_labels:
+        label_key = comparable_text(label)
+        if not label_key:
+            continue
+        if key == label_key:
+            return label
+        if strip_generic_entity_affixes(key) == strip_generic_entity_affixes(label_key):
+            return label
+        score = SequenceMatcher(None, key, label_key, autojunk=False).ratio()
+        if score > best_score:
+            best_score = score
+            best_label = label
+    if best_score >= 0.88:
+        return best_label
+    return name
 
 
 def is_grounded(candidate: str, source_key: str, *, min_coverage: float = 0.72) -> bool:

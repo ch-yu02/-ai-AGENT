@@ -28,6 +28,7 @@ from .session import (
     SessionHistorySummary,
     SessionStatus,
     StartSessionRequest,
+    UpdateSessionRequest,
     new_session_id,
 )
 from .websocket import WebSocketMessage
@@ -58,6 +59,7 @@ __all__ = [
     "StartSessionRequest",
     "TimelineItem",
     "TranscriptSegment",
+    "UpdateSessionRequest",
     "WebSocketMessage",
     "new_session_id",
     "utc_now_iso",

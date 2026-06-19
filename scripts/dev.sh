@@ -20,9 +20,20 @@ load_env_file() {
   fi
 }
 
+normalize_proxy_env() {
+  local name value
+  for name in HTTP_PROXY HTTPS_PROXY ALL_PROXY http_proxy https_proxy all_proxy; do
+    value="${!name-}"
+    if [[ "$value" == socks://* ]]; then
+      export "$name=socks5h://${value#socks://}"
+      echo "Normalized $name from socks:// to socks5h:// for Python HTTP clients." >&2
+    fi
+  done
+}
+
 should_load_env_file() {
   case "$DEV_COMMAND" in
-    backend|frontend|dev|mock|audio-stream|whisperlive-server|whisperlive-md|llm-smoke|rebuild-global-index|build)
+    backend|frontend|dev|mock|audio-stream|whisperlive-server|whisperlive-md|llm-smoke|rag-smoke|rebuild-global-index|build|install-rag)
       return 0
       ;;
     *)
@@ -33,6 +44,7 @@ should_load_env_file() {
 
 if should_load_env_file; then
   load_env_file
+  normalize_proxy_env
 fi
 
 BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
@@ -63,6 +75,7 @@ Commands:
   compile          Compile-check backend Python files
   build            Type-check and build frontend
   install-backend  Install backend Python dependencies
+  install-rag      Install optional LlamaIndex/vector RAG dependencies
   install-whisperlive
                    Install lightweight WhisperLive deps into OpenVINO Python
   mock             Send mock events to an existing frontend-created session
@@ -71,6 +84,7 @@ Commands:
                    Start WhisperLive OpenVINO websocket server on iGPU
   whisperlive-md   Stream local audio to WhisperLive and periodically update Qwen notes
   llm-smoke        Manually test configured LLM provider with fixed classroom data
+  rag-smoke        Smoke-test configured RAG backend and vector fallback status
   rebuild-global-index
                    Rebuild data/indexes/global documents snapshot
 
@@ -86,11 +100,13 @@ Examples:
   scripts/dev.sh dev
   scripts/dev.sh test
   scripts/dev.sh mock --session-id lec_xxx --no-end
-  scripts/dev.sh audio-stream --session-id lec_xxx --max-audio-seconds 120 --whisper-device GPU --qwen-device CPU
+  scripts/dev.sh audio-stream --max-audio-seconds 120 --whisper-device GPU --qwen-device CPU
   scripts/dev.sh install-whisperlive
+  scripts/dev.sh install-rag
+  scripts/dev.sh rag-smoke --require-llamaindex
   scripts/dev.sh whisperlive-server --port 9090
   scripts/dev.sh whisperlive-md --max-audio-seconds 300 --update-every-seconds 30
-  scripts/dev.sh whisperlive-md --session-id lec_xxx --enable-cloud-graph --max-audio-seconds 300 --update-every-seconds 30 --graph-update-every-seconds 60
+  scripts/dev.sh whisperlive-md --enable-cloud-graph --max-audio-seconds 300 --update-every-seconds 30 --graph-update-every-seconds 60
   scripts/dev.sh whisperlive-md --domain-terms "线性代数,矩阵,特征值" --max-audio-seconds 60 --update-every-seconds 20
   scripts/dev.sh whisperlive-md --whisperlive-model OpenVINO/whisper-medium-fp16-ov --max-audio-seconds 60 --fast-send
   BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
@@ -206,6 +222,22 @@ run_install_backend() {
   "$PIP_BIN" install -r backend/requirements.txt
 }
 
+run_install_rag() {
+  if [[ ! -x "$PIP_BIN" ]]; then
+    echo "Missing .venv/bin/pip. Create the virtualenv first:" >&2
+    echo "  python -m venv .venv" >&2
+    exit 1
+  fi
+
+  cd "$ROOT_DIR"
+  if [[ "${RAG_INSTALL_CPU_TORCH:-1}" != "0" ]]; then
+    local torch_index_url="${RAG_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+    echo "Installing CPU-only torch first from: $torch_index_url"
+    "$PIP_BIN" install --index-url "$torch_index_url" torch
+  fi
+  "$PIP_BIN" install -r backend/requirements-rag.txt
+}
+
 run_install_whisperlive() {
   require_openvino_python
   cd "$ROOT_DIR"
@@ -237,12 +269,6 @@ run_mock() {
 run_audio_stream() {
   require_openvino_python
   cd "$ROOT_DIR"
-  if [[ "$#" -eq 1 ]]; then
-    echo "audio-stream requires an existing frontend-created session_id." >&2
-    echo "Start a classroom in the frontend first, then run:" >&2
-    echo "  scripts/dev.sh audio-stream --session-id REPLACE_WITH_SESSION_ID --max-audio-seconds 120 --whisper-device GPU --qwen-device CPU" >&2
-    exit 1
-  fi
   "$OPENVINO_PYTHON" backend/scripts/local_audio_stream_sender.py "${@:2}"
 }
 
@@ -262,6 +288,12 @@ run_llm_smoke() {
   require_backend_venv
   cd "$ROOT_DIR"
   "$PYTHON_BIN" -m backend.scripts.llm_smoke
+}
+
+run_rag_smoke() {
+  require_backend_venv
+  cd "$ROOT_DIR"
+  "$PYTHON_BIN" -m backend.scripts.rag_smoke "${@:2}"
 }
 
 run_rebuild_global_index() {
@@ -301,6 +333,9 @@ case "$command" in
   install-backend)
     run_install_backend
     ;;
+  install-rag)
+    run_install_rag
+    ;;
   install-whisperlive)
     run_install_whisperlive
     ;;
@@ -318,6 +353,9 @@ case "$command" in
     ;;
   llm-smoke)
     run_llm_smoke
+    ;;
+  rag-smoke)
+    run_rag_smoke "$@"
     ;;
   rebuild-global-index)
     run_rebuild_global_index "$@"

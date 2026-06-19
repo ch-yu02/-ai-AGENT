@@ -15,7 +15,14 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .documents import RagDocument
-from .query_service import QueryResult, QueryService, RagSourceRef
+from .query_service import (
+    MAX_SOURCE_REF_COUNT,
+    QueryResult,
+    QueryService,
+    RagSourceRef,
+    compact_source_ref_text,
+)
+from .llama_settings import configure_llamaindex_settings
 
 
 class LlamaIndexQueryService:
@@ -55,7 +62,8 @@ class LlamaIndexQueryService:
         1. 如果能解析出 session_id 且本地持久化索引存在，优先加载索引。
         2. 如果没有索引，则把 ``RagDocument`` 转成 LlamaIndex Document 并构建
            本次查询的临时内存索引。
-        3. 调用 query engine。
+        3. 优先调用 retriever 做向量召回，只在旧版本/测试 fake 不支持时调用
+           query engine。
         4. 从 source_nodes 中恢复 EDU-Mate 来源引用。
 
         任一环节失败都会回退到词法检索，并把失败原因放入 warning。这样开发者
@@ -66,9 +74,29 @@ class LlamaIndexQueryService:
 
         try:
             index = self._load_or_build_index(documents)
-            query_engine = index.as_query_engine(similarity_top_k=limit)
+            source_limit = min(max(1, limit), MAX_SOURCE_REF_COUNT)
+            source_nodes = self._retrieve_source_nodes(
+                index,
+                prompt,
+                source_limit=source_limit,
+            )
+            if source_nodes is not None:
+                refs = self._source_refs_from_nodes(source_nodes, limit=source_limit)
+                if not refs:
+                    return QueryResult(
+                        answer="LlamaIndex 向量检索没有返回可映射的课堂来源。",
+                        source_refs=[],
+                        warnings=["LlamaIndex 未返回可映射的来源引用。"],
+                    )
+                return QueryResult(
+                    answer=self._answer_from_refs(refs),
+                    source_refs=refs,
+                    warnings=[],
+                )
+
+            query_engine = index.as_query_engine(similarity_top_k=source_limit)
             response = query_engine.query(prompt)
-            refs = self._source_refs_from_response(response, limit=limit)
+            refs = self._source_refs_from_response(response, limit=source_limit)
 
             if not refs:
                 # LlamaIndex 给出文本但没有来源时，不直接丢弃回答，而是附加 warning。
@@ -184,6 +212,7 @@ class LlamaIndexQueryService:
         try:
             from llama_index.core import (
                 Document,
+                Settings,
                 StorageContext,
                 VectorStoreIndex,
                 load_index_from_storage,
@@ -193,6 +222,7 @@ class LlamaIndexQueryService:
                 "llama-index is not installed; run backend dependency install first"
             ) from exc
 
+        configure_llamaindex_settings(Settings)
         return Document, VectorStoreIndex, StorageContext, load_index_from_storage
 
     def _to_llama_document(
@@ -219,6 +249,34 @@ class LlamaIndexQueryService:
         读取，尽量兼容版本差异和测试 fake。
         """
         source_nodes = getattr(response, "source_nodes", []) or []
+        return self._source_refs_from_nodes(source_nodes, limit=limit)
+
+    def _retrieve_source_nodes(
+        self,
+        index: Any,
+        prompt: str,
+        *,
+        source_limit: int,
+    ) -> list[Any] | None:
+        """Prefer LlamaIndex retriever output instead of its default LLM answer."""
+        as_retriever = getattr(index, "as_retriever", None)
+        if not callable(as_retriever):
+            return None
+
+        retriever = as_retriever(similarity_top_k=source_limit)
+        retrieve = getattr(retriever, "retrieve", None)
+        if not callable(retrieve):
+            return None
+
+        return list(retrieve(prompt) or [])
+
+    def _source_refs_from_nodes(
+        self,
+        source_nodes: list[Any],
+        *,
+        limit: int,
+    ) -> list[RagSourceRef]:
+        """从 LlamaIndex source nodes 中提取 EDU-Mate 来源引用。"""
         refs: list[RagSourceRef] = []
 
         for source_node in source_nodes[:limit]:
@@ -235,11 +293,20 @@ class LlamaIndexQueryService:
                     type=source_type,
                     id=source_id,
                     ts=ts if isinstance(ts, int | float) else None,
-                    text=self._node_text(node),
+                    text=compact_source_ref_text(
+                        self._node_text(node),
+                        metadata=metadata,
+                    ),
                 )
             )
 
         return refs
+
+    def _answer_from_refs(self, refs: list[RagSourceRef]) -> str:
+        """Build a source-only answer from retrieved vector hits."""
+        return "我在课堂向量索引中找到这些相关内容：\n" + "\n".join(
+            f"- {ref.text}" for ref in refs[:MAX_SOURCE_REF_COUNT]
+        )
 
     def _node_text(self, node: Any) -> str:
         """兼容不同 LlamaIndex 节点对象的正文读取方式。"""

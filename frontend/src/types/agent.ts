@@ -84,6 +84,28 @@ export type GlobalSearchResponse = {
   warnings: string[];
 };
 
+export type CourseSummary = {
+  course: string;
+  session_count: number;
+  latest_session_id?: string | null;
+  latest_title?: string | null;
+  latest_start_time?: string | null;
+  node_count: number;
+  edge_count: number;
+};
+
+export type CourseListResponse = {
+  courses: CourseSummary[];
+  warnings: string[];
+};
+
+export type CourseKnowledgeTreeResponse = {
+  course: string;
+  session_count: number;
+  knowledge_graph: unknown;
+  warnings: string[];
+};
+
 // AgentPanel 内部消息模型。
 //
 // Agent 聊天记录主要存在组件状态里，不进入 classroomReducer 的实时消息合并。

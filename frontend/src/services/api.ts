@@ -22,6 +22,11 @@ export type StartSessionPayload = {
   device_id?: string | null;
 };
 
+export type UpdateSessionPayload = {
+  title?: string;
+  course?: string | null;
+};
+
 // 统一 API 错误类型。
 // 组件层捕获这个错误时，可以拿到 status 做更细的 UI 分支：
 // 404 -> session 不存在，409 -> session 已结束，等等。
@@ -94,6 +99,12 @@ export function startSession(payload: StartSessionPayload = {}): Promise<Lecture
   });
 }
 
+// 读取后端内存中仍在录制的课堂。用于本地脚本自动创建 session 后，
+// 前端无需手动复制 session_id 就能接入同一节测试课堂。
+export function listRecordingSessions(): Promise<LectureSession[]> {
+  return requestJson<LectureSession[]>("/sessions/recording");
+}
+
 // 结束课堂 session。
 //
 // 后端 end 接口是幂等的：重复结束同一节课不会产生重复事件语义。
@@ -101,6 +112,18 @@ export function startSession(payload: StartSessionPayload = {}): Promise<Lecture
 export function endSession(sessionId: string): Promise<LectureSession> {
   return requestJson<LectureSession>(`/sessions/${sessionId}/end`, {
     method: "POST",
+  });
+}
+
+// 更新课堂标题/课程名称。录制中的课堂会同步内存 session；已保存历史课堂会
+// 同步 metadata.json，便于手动修正 Qwen 自动生成的名称。
+export function updateSessionMetadata(
+  sessionId: string,
+  payload: UpdateSessionPayload,
+): Promise<LectureSession> {
+  return requestJson<LectureSession>(`/sessions/${sessionId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
   });
 }
 

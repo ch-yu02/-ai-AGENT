@@ -16,6 +16,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from backend.app.models import KnowledgeTree
+
 
 AgentIntent = Literal["auto", "qa", "summary", "todos", "quiz"]
 """前端可请求的模式。``auto`` 表示让后端根据 prompt 自动判断意图。"""
@@ -168,6 +170,41 @@ class GlobalSearchResponse(BaseModel):
     """非致命提示，例如没有历史课堂或没有找到依据。"""
 
 
+class CourseSummary(BaseModel):
+    """历史课堂按课程聚合后的摘要。"""
+
+    course: str
+    """课程名；未填写课程的历史课堂归入“未命名课程”。"""
+    session_count: int
+    """该课程下已保存课堂数量。"""
+    latest_session_id: str | None = None
+    """最近一节课的 session_id。"""
+    latest_title: str | None = None
+    """最近一节课标题。"""
+    latest_start_time: str | None = None
+    """最近一节课开始时间。"""
+    node_count: int = 0
+    """按节点 label 去重后的知识点数量。"""
+    edge_count: int = 0
+    """按 source/relation/target 去重后的关系数量。"""
+
+
+class CourseListResponse(BaseModel):
+    """历史课堂课程聚合响应。"""
+
+    courses: list[CourseSummary] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+
+
+class CourseKnowledgeTreeResponse(BaseModel):
+    """多节历史课堂合并后的课程知识树。"""
+
+    course: str
+    session_count: int
+    knowledge_graph: KnowledgeTree
+    warnings: list[str] = Field(default_factory=list)
+
+
 class NotesSourceSegment(BaseModel):
     """结构化笔记快照关联的一条 WhisperLive 字幕来源。"""
 
@@ -222,6 +259,12 @@ class NotesKnowledgeTreeUpdateResponse(BaseModel):
     """成功生成的 knowledge.extraction ID。"""
     graph_patch_operations: int = 0
     """本次图谱增量操作数量。"""
+    session_title: str | None = None
+    """云端模型根据最终笔记识别出的课堂标题。"""
+    course: str | None = None
+    """云端模型根据最终笔记识别出的课程/学科名称。"""
+    session_metadata_updated: bool = False
+    """是否已把云端识别的标题/课程写回课堂元数据。"""
     warnings: list[str] = Field(default_factory=list)
     """非致命提示和云端抽取错误摘要。"""
 
@@ -233,6 +276,9 @@ __all__ = [
     "AgentChatResponse",
     "AgentIntent",
     "AgentSourceRef",
+    "CourseKnowledgeTreeResponse",
+    "CourseListResponse",
+    "CourseSummary",
     "GlobalSearchHit",
     "GlobalSearchRequest",
     "GlobalSearchResponse",

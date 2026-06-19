@@ -99,6 +99,35 @@ class RagDocumentsTest(unittest.TestCase):
         self.assertEqual(documents[1].metadata["source_id"], "structured_notes")
         self.assertIn("傅里叶变换是本节课重点", documents[1].text)
 
+    def test_structured_notes_document_excludes_full_transcript_sections(self) -> None:
+        session_id = "lec_rag_notes"
+        context = ClassroomContext(session_id=session_id)
+
+        documents = build_session_documents(
+            context,
+            KnowledgeTree(session_id=session_id),
+            structured_notes_markdown=(
+                "# 结构化课堂笔记\n\n"
+                "- 生成时间：2026-06-18 10:00:00\n\n"
+                "- 课程名称：通信原理\n\n"
+                "## 课堂要点\n\n"
+                "- 傅里叶变换用于分析频域特征。\n\n"
+                "## 润色字幕\n\n"
+                "[00:01] 这里是很长的润色字幕，不应该作为结构化笔记来源展示。\n\n"
+                "## 原始 WhisperLive 字幕\n\n"
+                "[00:01] 这里是原始字幕，也不应该进入 structured_note 文档。\n"
+            ),
+        )
+
+        note_document = documents[0]
+        self.assertEqual(note_document.metadata["type"], "structured_note")
+        self.assertIn("傅里叶变换用于分析频域特征", note_document.text)
+        self.assertNotIn("课程名称", note_document.text)
+        self.assertNotIn("很长的润色字幕", note_document.text)
+        self.assertNotIn("原始字幕", note_document.text)
+        self.assertNotIn("生成时间", note_document.text)
+        self.assertNotIn("很长的润色字幕", note_document.metadata["display_text"])
+
 
 if __name__ == "__main__":
     unittest.main()

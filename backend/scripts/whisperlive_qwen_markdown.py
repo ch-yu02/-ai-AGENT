@@ -1,4 +1,4 @@
-"""Transcribe audio with WhisperLive, polish with local Qwen, and write Markdown.
+"""Transcribe audio with WhisperLive, organize notes with local Qwen, and write Markdown.
 
 This script is intentionally offline after model downloads:
 
@@ -11,7 +11,10 @@ This script is intentionally offline after model downloads:
    ``data/sessions/{session_id}/structured_notes.md``; without a session it
    falls back to ``data/whisperlive_markdown`` for offline smoke tests.
 
-No cloud LLM or EDU-Mate ``/events`` calls are made in this smoke path.
+When ``--post-transcript`` or ``--enable-cloud-graph`` is enabled, the script
+also syncs raw WhisperLive transcript events and Markdown snapshots to the
+backend. Cloud graph extraction and final session naming are handled by the
+backend, not by local Qwen.
 """
 
 from __future__ import annotations
@@ -45,6 +48,7 @@ from backend.scripts.local_audio_stream_sender import (
     SAMPLE_RATE,
     parse_json_object,
     post_json,
+    resolve_backend_session_id,
     result_text,
     send_event,
     sequence_coverage,
@@ -61,6 +65,8 @@ DEFAULT_WHISPERLIVE_MODEL = os.getenv(
 DEFAULT_INPUT = DEFAULT_OPENVINO_ROOT / "test_video"
 DEFAULT_OUTPUT_DIR = Path("data/whisperlive_markdown")
 DEFAULT_SESSIONS_DIR = Path("data/sessions")
+DEFAULT_MARKDOWN_TITLE = "WhisperLive 本地课堂笔记"
+ENGLISH_MARKDOWN_TITLE = "WhisperLive Local Classroom Notes"
 
 
 @dataclass(frozen=True)
@@ -77,11 +83,9 @@ class WhisperLiveSegment:
 class MarkdownResult:
     """Normalized Qwen markdown payload."""
 
-    title: str
     summary: list[str]
     sections: list[tuple[str, list[str]]]
     keywords: list[str]
-    clean_transcript: list[str]
 
 
 @dataclass(frozen=True)
@@ -104,7 +108,6 @@ def markdown_result_counts(result: MarkdownResult) -> dict[str, int]:
         "sections": len(result.sections),
         "bullets": sum(len(bullets) for _, bullets in result.sections),
         "keywords": len(result.keywords),
-        "clean_transcript": len(result.clean_transcript),
     }
 
 
@@ -113,8 +116,7 @@ def format_markdown_result_counts(result: MarkdownResult) -> str:
     counts = markdown_result_counts(result)
     return (
         f"summary={counts['summary']} sections={counts['sections']} "
-        f"bullets={counts['bullets']} keywords={counts['keywords']} "
-        f"clean_transcript={counts['clean_transcript']}"
+        f"bullets={counts['bullets']} keywords={counts['keywords']}"
     )
 
 
@@ -189,7 +191,13 @@ class BackendSyncer:
     @property
     def enabled(self) -> bool:
         """Return true when any backend sync behavior is enabled."""
-        return bool(self.session_id and (self.post_transcript or self.enable_cloud_graph))
+        return bool(
+            self.session_id
+            and (
+                self.post_transcript
+                or self.enable_cloud_graph
+            )
+        )
 
     def start(self) -> None:
         """Start the worker thread when backend sync is enabled."""
@@ -341,6 +349,7 @@ class BackendSyncer:
             "POST notes snapshot "
             f"{payload['snapshot_id']} from {payload['output_path']} -> "
             f"{response.get('status')} ops={response.get('graph_patch_operations', 0)} "
+            f"metadata_updated={response.get('session_metadata_updated', False)} "
             f"elapsed={elapsed:.2f}s warnings={warnings}"
         )
 
@@ -770,13 +779,8 @@ def normalize_markdown_result(
     segments: list[WhisperLiveSegment],
 ) -> MarkdownResult:
     """Normalize Qwen JSON into MarkdownResult."""
-    fallback_title = "WhisperLive 本地课堂笔记"
-    title = clean_scalar(payload.get("title")) or fallback_title
     summary = clean_list(payload.get("summary"))
     keywords = clean_list(payload.get("keywords"))
-    clean_transcript = clean_list(payload.get("clean_transcript"))
-    if not clean_transcript:
-        clean_transcript = [segment.text for segment in segments if segment.text.strip()]
 
     sections: list[tuple[str, list[str]]] = []
     raw_sections = payload.get("sections")
@@ -792,23 +796,18 @@ def normalize_markdown_result(
     if not sections and summary:
         sections.append(("课堂要点", summary))
     return MarkdownResult(
-        title=title,
         summary=summary,
         sections=sections,
         keywords=keywords,
-        clean_transcript=clean_transcript,
     )
 
 
 def fallback_markdown_result(segments: list[WhisperLiveSegment]) -> MarkdownResult:
     """Build a minimal MarkdownResult when Qwen returns malformed JSON."""
-    clean_transcript = [segment.text for segment in segments if segment.text.strip()]
     return MarkdownResult(
-        title="WhisperLive 本地课堂笔记",
         summary=[],
         sections=[],
         keywords=[],
-        clean_transcript=clean_transcript,
     )
 
 
@@ -873,66 +872,6 @@ def filter_grounded_list(
     ]
 
 
-def is_plausible_polished_transcript(
-    text: str,
-    *,
-    transcript_key: str,
-    domain_terms: list[str],
-) -> bool:
-    """Allow stronger ASR typo correction while still blocking hallucinated subtitles."""
-    item_key = transcript_compare_key(text)
-    if not item_key or not transcript_key:
-        return False
-    if item_key in transcript_key:
-        return True
-    if len(item_key) <= 3:
-        return False
-    if len(item_key) > max(len(transcript_key) + 12, int(len(transcript_key) * 1.12)):
-        return False
-
-    stripped_key = item_key
-    for term in domain_terms:
-        term_key = transcript_compare_key(term)
-        if term_key and term_key in stripped_key:
-            stripped_key = stripped_key.replace(term_key, "")
-    if not stripped_key:
-        return True
-
-    matched = matched_character_count(stripped_key, transcript_key)
-    coverage = matched / max(1, len(stripped_key))
-    unmatched = len(stripped_key) - matched
-    # clean_transcript may legitimately replace several homophone characters
-    # in one sentence, so keep this looser than summary/section grounding.
-    return coverage >= 0.45 and unmatched <= max(8, int(len(stripped_key) * 0.45))
-
-
-def filter_grounded_clean_transcript(
-    values: list[str],
-    *,
-    transcript_key: str,
-    domain_terms: list[str],
-) -> list[str]:
-    """Keep polished subtitle lines, allowing larger ASR typo corrections."""
-    accepted: list[str] = []
-    seen: set[str] = set()
-    for item in values:
-        text = clean_scalar(item)
-        if not text or text in seen:
-            continue
-        if is_grounded_note_item(
-            text,
-            transcript_key=transcript_key,
-            domain_terms=domain_terms,
-        ) or is_plausible_polished_transcript(
-            text,
-            transcript_key=transcript_key,
-            domain_terms=domain_terms,
-        ):
-            accepted.append(text)
-            seen.add(text)
-    return accepted
-
-
 def enforce_markdown_grounding(
     result: MarkdownResult,
     *,
@@ -941,7 +880,6 @@ def enforce_markdown_grounding(
 ) -> MarkdownResult:
     """Drop Qwen note content that is not supported by the transcript."""
     transcript_key = combined_transcript_key(segments)
-    raw_transcript = [segment.text for segment in segments if segment.text.strip()]
 
     summary = filter_grounded_list(
         result.summary,
@@ -953,11 +891,6 @@ def enforce_markdown_grounding(
         transcript_key=transcript_key,
         domain_terms=domain_terms,
     )
-    clean_transcript = filter_grounded_clean_transcript(
-        result.clean_transcript,
-        transcript_key=transcript_key,
-        domain_terms=domain_terms,
-    ) or raw_transcript
 
     sections: list[tuple[str, list[str]]] = []
     for heading, bullets in result.sections:
@@ -973,15 +906,11 @@ def enforce_markdown_grounding(
         log("Dropped ungrounded Qwen summary items")
     if result.sections and not sections:
         log("Dropped ungrounded Qwen section bullets")
-    if result.clean_transcript and clean_transcript == raw_transcript:
-        log("Dropped ungrounded Qwen polished transcript items")
 
     return MarkdownResult(
-        title=result.title,
         summary=summary,
         sections=sections,
         keywords=keywords,
-        clean_transcript=clean_transcript,
     )
 
 
@@ -994,34 +923,81 @@ def render_markdown(
     update_status: str = "final",
 ) -> str:
     """Render a Markdown document."""
+    labels = markdown_labels(result, segments)
     lines = [
-        f"# {result.title}",
+        f"# {labels['title']}",
         "",
-        f"- 生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"- 更新状态：{update_status}",
-        f"- 音频文件：`{source_file}`",
-        f"- WhisperLive 模型：`{whisper_model}`",
-        f"- 字幕段数：{len(segments)}",
+        f"- {labels['generated_at']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"- {labels['update_status']}：{update_status}",
+        f"- {labels['audio_file']}：`{source_file}`",
+        f"- {labels['whisper_model']}：`{whisper_model}`",
+        f"- {labels['segment_count']}：{len(segments)}",
         "",
     ]
     if result.summary:
-        lines.extend(["## 摘要", ""])
+        lines.extend([f"## {labels['summary']}", ""])
         lines.extend(f"- {item}" for item in result.summary)
         lines.append("")
     if result.keywords:
-        lines.extend(["## 关键词", "", "、".join(result.keywords), ""])
+        keyword_joiner = "、" if labels["language"] == "zh" else ", "
+        lines.extend([f"## {labels['keywords']}", "", keyword_joiner.join(result.keywords), ""])
     for heading, bullets in result.sections:
         lines.extend([f"## {heading}", ""])
         lines.extend(f"- {item}" for item in bullets)
         lines.append("")
-    lines.extend(["## 润色字幕", ""])
-    lines.extend(f"{index}. {text}" for index, text in enumerate(result.clean_transcript, start=1))
-    lines.extend(["", "## 原始 WhisperLive 字幕", ""])
+    lines.extend([f"## {labels['subtitles']}", ""])
     for segment in segments:
         status = "final" if segment.completed else "partial"
         lines.append(f"- `{segment.start:.2f}-{segment.end:.2f}` ({status}) {segment.text}")
     lines.append("")
     return "\n".join(lines)
+
+
+def markdown_labels(
+    result: MarkdownResult,
+    segments: list[WhisperLiveSegment],
+) -> dict[str, str]:
+    """Return Markdown chrome labels matching the main lecture language."""
+    sample = "\n".join(
+        [
+            *result.summary,
+            *result.keywords,
+            *(bullet for _, bullets in result.sections for bullet in bullets),
+            *(segment.text for segment in segments),
+        ]
+    )
+    if main_text_language(sample) == "en":
+        return {
+            "language": "en",
+            "title": ENGLISH_MARKDOWN_TITLE,
+            "generated_at": "Generated at",
+            "update_status": "Update status",
+            "audio_file": "Audio file",
+            "whisper_model": "WhisperLive model",
+            "segment_count": "Subtitle segments",
+            "summary": "Summary",
+            "keywords": "Keywords",
+            "subtitles": "WhisperLive Subtitles",
+        }
+    return {
+        "language": "zh",
+        "title": DEFAULT_MARKDOWN_TITLE,
+        "generated_at": "生成时间",
+        "update_status": "更新状态",
+        "audio_file": "音频文件",
+        "whisper_model": "WhisperLive 模型",
+        "segment_count": "字幕段数",
+        "summary": "摘要",
+        "keywords": "关键词",
+        "subtitles": "WhisperLive 字幕",
+    }
+
+
+def main_text_language(text: str) -> str:
+    """Infer whether note chrome should use Chinese or English."""
+    cjk = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
+    latin = sum(1 for char in text if char.isascii() and char.isalpha())
+    return "en" if latin > 0 and cjk == 0 else "zh"
 
 
 def make_markdown_output_path(
@@ -1139,6 +1115,10 @@ class PeriodicMarkdownUpdater:
         if not final_segments:
             return None
         return self.write_update(final_segments, final=True)
+
+    def latest_result(self) -> MarkdownResult | None:
+        """Return the latest Qwen notes result, if one has been generated."""
+        return self._latest_qwen_result
 
     def write_update(
         self,
@@ -1325,7 +1305,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--session-id",
         default="",
-        help="Existing frontend-created session_id for backend transcript/graph sync.",
+        help=(
+            "Existing session_id for backend transcript/graph sync. Use 'auto' "
+            "or omit it with --post-transcript/--enable-cloud-graph to attach to "
+            "the newest recording session, creating one if none exists."
+        ),
     )
     parser.add_argument("--whisperlive-model", default=DEFAULT_WHISPERLIVE_MODEL)
     parser.add_argument("--language", default="<|zh|>")
@@ -1374,11 +1358,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=60.0,
         help="Minimum interval between streaming Markdown graph updates. Final updates always send.",
     )
+    parser.add_argument(
+        "--no-update-session-name",
+        action="store_true",
+        help=(
+            "Deprecated compatibility flag. Session title/course are inferred "
+            "by the backend cloud notes agent on final snapshots."
+        ),
+    )
     parser.add_argument("--http-timeout", type=float, default=30.0)
     parser.add_argument(
         "--domain-terms",
         default=os.getenv("DOMAIN_TERMS", ""),
-        help="Comma separated terms Qwen may use for conservative transcript correction.",
+        help="Comma separated terms Qwen may use for conservative notes correction.",
     )
     parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--send-last-n-segments", type=int, default=12)
@@ -1395,14 +1387,18 @@ def main(argv: list[str] | None = None) -> int:
     log(f"WhisperLive server: {args.server}:{args.port}")
     log(f"WhisperLive model: {args.whisperlive_model}")
     sync_enabled = bool(args.post_transcript or args.enable_cloud_graph)
-    if sync_enabled and not args.session_id.strip():
-        raise ValueError(
-            "--session-id is required when --post-transcript or --enable-cloud-graph is used"
+    session_id = args.session_id.strip()
+    needs_backend_session = sync_enabled
+    if needs_backend_session:
+        session_id = resolve_backend_session_id(
+            requested_session_id=session_id or "auto",
+            base_url=args.backend_url,
+            timeout=args.http_timeout,
         )
     post_transcript = bool(args.post_transcript or args.enable_cloud_graph)
     syncer = BackendSyncer(
         base_url=args.backend_url,
-        session_id=args.session_id.strip(),
+        session_id=session_id,
         http_timeout=args.http_timeout,
         post_transcript=post_transcript,
         enable_cloud_graph=bool(args.enable_cloud_graph),
@@ -1413,7 +1409,7 @@ def main(argv: list[str] | None = None) -> int:
         log(
             "Backend sync enabled: "
             f"transcript={post_transcript}, cloud_graph={args.enable_cloud_graph}, "
-            f"url={args.backend_url}, session={args.session_id.strip()}"
+            f"url={args.backend_url}, session={session_id}"
         )
     client = WhisperLiveFileClient(
         host=args.server,
@@ -1430,7 +1426,7 @@ def main(argv: list[str] | None = None) -> int:
     output_path = make_markdown_output_path(
         Path(args.output_dir),
         input_path,
-        session_id=args.session_id.strip(),
+        session_id=session_id,
         sessions_dir=Path(args.sessions_dir),
     )
     domain_terms = parse_domain_terms(args.domain_terms)

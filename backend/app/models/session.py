@@ -76,6 +76,15 @@ class StartSessionRequest(BaseModel):
     """发起设备的硬件标识（可选），后续用于多设备配对。"""
 
 
+class UpdateSessionRequest(BaseModel):
+    """更新课堂元信息的请求体模型。"""
+
+    title: str | None = Field(default=None)
+    """课堂标题。省略表示不修改；空字符串会被 API 拒绝。"""
+    course: str | None = Field(default=None)
+    """课程名称。省略表示不修改；传 null 或空字符串表示清空。"""
+
+
 class LectureSession(BaseModel):
     """课堂会话的完整数据模型，在 HTTP API、WebSocket 和存储之间共享。
 

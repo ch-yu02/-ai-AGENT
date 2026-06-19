@@ -28,7 +28,13 @@ MVP 合并策略
 """
 
 import re
+from collections import deque
+from difflib import SequenceMatcher
 
+from backend.app.knowledge_quality import (
+    is_low_value_entity_name,
+    strip_generic_entity_affixes,
+)
 from backend.app.models import (
     GraphPatch,
     GraphPatchOperation,
@@ -156,9 +162,12 @@ class KnowledgeGraphManager:
         如果实体名第一次出现，创建 ``add_node`` 操作；如果已存在，则合并
         摘要、重要度和来源引用，必要时返回 ``update_node``。
         """
+        if self._is_low_value_label(entity.name):
+            return None
+
         key = self._normalize_label(entity.name)
         index = self._node_index.setdefault(graph.session_id, {})
-        node_id = index.get(key)
+        node_id = index.get(key) or self._find_similar_node_id(graph, key)
 
         if node_id is None:
             node = KnowledgeNode(
@@ -179,6 +188,9 @@ class KnowledgeGraphManager:
             return None
 
         changed = False
+        if node.type == "concept" and entity.type and entity.type != node.type:
+            node.type = entity.type
+            changed = True
         if entity.description and entity.description != node.summary:
             node.summary = entity.description
             changed = True
@@ -206,9 +218,12 @@ class KnowledgeGraphManager:
         返回节点和可选 add_node 操作。这样当前端收到只包含关系的抽取
         结果时，也会先创建缺失节点，再创建边。
         """
+        if self._is_low_value_label(label):
+            raise ValueError(f"Low-value relation endpoint should be filtered first: {label}")
+
         key = self._normalize_label(label)
         index = self._node_index.setdefault(graph.session_id, {})
-        node_id = index.get(key)
+        node_id = index.get(key) or self._find_similar_node_id(graph, key)
         if node_id is not None:
             node = self._find_node(graph, node_id)
             if node is not None:
@@ -239,18 +254,30 @@ class KnowledgeGraphManager:
     ) -> list[GraphPatchOperation]:
         """Insert or enrich an edge between two existing/placeholder nodes."""
         operations: list[GraphPatchOperation] = []
+        source_label, target_label, relation_label = self._normalize_relation(
+            relation.source,
+            relation.target,
+            relation.relation,
+        )
+        if (
+            self._is_low_value_label(source_label)
+            or self._is_low_value_label(target_label)
+            or source_label == target_label
+        ):
+            return operations
+
         source_node, source_operation = self._ensure_node_for_relation(
-            graph, relation.source, refs
+            graph, source_label, refs
         )
         target_node, target_operation = self._ensure_node_for_relation(
-            graph, relation.target, refs
+            graph, target_label, refs
         )
         if source_operation is not None:
             operations.append(source_operation)
         if target_operation is not None:
             operations.append(target_operation)
 
-        edge_id = self._edge_id(source_node.node_id, target_node.node_id, relation.relation)
+        edge_id = self._edge_id(source_node.node_id, target_node.node_id, relation_label)
 
         for edge in graph.edges:
             if edge.edge_id == edge_id:
@@ -265,7 +292,7 @@ class KnowledgeGraphManager:
             edge_id=edge_id,
             source=source_node.node_id,
             target=target_node.node_id,
-            relation=relation.relation,
+            relation=relation_label,
             source_refs=self._limited_refs(refs, self.MAX_EDGE_SOURCE_REFS),
         )
         graph.edges.append(edge)
@@ -325,15 +352,28 @@ class KnowledgeGraphManager:
         return unique[-max_refs:]
 
     def _recompute_roots(self, graph: KnowledgeTree) -> None:
-        """Recalculate root nodes from edge targets.
-
-        简单规则：没有入边的节点就是根节点。前端可以用 root_nodes 先做
-        树形展示；如果某个课堂图谱本质是网状结构，也仍然能作为图渲染。
-        """
+        """Recalculate root nodes and breadth-first tree levels."""
         targets = {edge.target for edge in graph.edges}
         graph.root_nodes = [node.node_id for node in graph.nodes if node.node_id not in targets]
+        if not graph.root_nodes and graph.nodes:
+            graph.root_nodes = [graph.nodes[0].node_id]
+
+        children: dict[str, list[str]] = {}
+        for edge in graph.edges:
+            children.setdefault(edge.source, []).append(edge.target)
+
+        levels: dict[str, int] = {}
+        queue: deque[tuple[str, int]] = deque((node_id, 0) for node_id in graph.root_nodes)
+        while queue:
+            node_id, level = queue.popleft()
+            if node_id in levels and levels[node_id] <= level:
+                continue
+            levels[node_id] = level
+            for child_id in children.get(node_id, []):
+                queue.append((child_id, level + 1))
+
         for node in graph.nodes:
-            node.level = 0 if node.node_id in graph.root_nodes else 1
+            node.level = levels.get(node.node_id, 0)
 
     def _find_node(self, graph: KnowledgeTree, node_id: str) -> KnowledgeNode | None:
         """Find one node by ID in the current graph snapshot."""
@@ -344,7 +384,65 @@ class KnowledgeGraphManager:
 
     def _normalize_label(self, label: str) -> str:
         """Normalize labels for MVP deduplication."""
-        return label.strip().lower()
+        normalized = re.sub(r"[\s\-_（）()《》“”'\"，,。:：]+", "", label.strip().lower())
+        return self._strip_generic_suffix(normalized)
+
+    def _find_similar_node_id(self, graph: KnowledgeTree, key: str) -> str | None:
+        """Find an existing node with an obviously equivalent label."""
+        best_node_id: str | None = None
+        best_score = 0.0
+        for node in graph.nodes:
+            node_key = self._normalize_label(node.label)
+            if key == node_key:
+                return node.node_id
+            if not key or not node_key:
+                continue
+            score = SequenceMatcher(None, key, node_key, autojunk=False).ratio()
+            if score > best_score:
+                best_score = score
+                best_node_id = node.node_id
+        if best_score >= 0.9:
+            index = self._node_index.setdefault(graph.session_id, {})
+            if best_node_id is not None:
+                index[key] = best_node_id
+            return best_node_id
+        return None
+
+    def _strip_generic_suffix(self, label: str) -> str:
+        return strip_generic_entity_affixes(label)
+
+    def _is_low_value_label(self, label: str) -> bool:
+        return is_low_value_entity_name(label)
+
+    def _normalize_relation(
+        self,
+        source: str,
+        target: str,
+        relation: str,
+    ) -> tuple[str, str, str]:
+        """Normalize relation label and hierarchy direction for stable edges."""
+        label = re.sub(r"[\s\-]+", "_", relation.strip().lower()) or "related_to"
+        label = re.sub(r"[^0-9a-zA-Z_\u4e00-\u9fff]+", "", label) or "related_to"
+        aliases = {
+            "include": "contains",
+            "includes": "contains",
+            "contain": "contains",
+            "has_part": "contains",
+        }
+        label = aliases.get(label, label)
+        reverse_hierarchy = {
+            "part_of": "contains",
+            "belongs_to": "contains",
+            "included_in": "contains",
+            "subtopic_of": "contains",
+            "example_of": "has_example",
+            "属于": "contains",
+            "隶属于": "contains",
+        }
+        reversed_label = reverse_hierarchy.get(label)
+        if reversed_label is not None:
+            return target, source, reversed_label
+        return source, target, label
 
     def _node_id(self, label: str) -> str:
         """Create a stable node ID from a human-readable label."""

@@ -53,6 +53,16 @@ class FakeQueryEngine:
         )
 
 
+class FakeRetriever:
+    """模拟 LlamaIndex retriever。"""
+
+    def __init__(self, documents: list[FakeLlamaDocument]) -> None:
+        self.documents = documents
+
+    def retrieve(self, prompt: str) -> list[FakeSourceNode]:
+        return [FakeSourceNode(document) for document in self.documents]
+
+
 class FakeVectorStoreIndex:
     """模拟 VectorStoreIndex.from_documents。"""
 
@@ -66,6 +76,13 @@ class FakeVectorStoreIndex:
 
     def as_query_engine(self, similarity_top_k: int) -> FakeQueryEngine:
         return FakeQueryEngine(self.documents[:similarity_top_k])
+
+
+class FakeRetrieverVectorStoreIndex(FakeVectorStoreIndex):
+    """模拟支持 retriever 的 VectorStoreIndex。"""
+
+    def as_retriever(self, similarity_top_k: int) -> FakeRetriever:
+        return FakeRetriever(self.documents[:similarity_top_k])
 
 
 class FakePersistableStorageContext:
@@ -146,6 +163,42 @@ class LlamaIndexQueryServiceTest(unittest.TestCase):
         self.assertEqual(result.source_refs[0].id, "seg_001")
         self.assertEqual(result.source_refs[0].type, "segment")
         self.assertEqual(result.source_refs[0].ts, 1.0)
+
+    def test_query_prefers_vector_retriever_without_query_engine_llm(self) -> None:
+        service = LlamaIndexQueryService(
+            fallback=QueryService(),
+            document_factory=FakeLlamaDocument,
+            index_factory=FakeRetrieverVectorStoreIndex,
+            storage_context_factory=FakeStorageContext,
+            load_index_func=fake_load_index_from_storage,
+        )
+
+        result = service.query("傅里叶变换讲了什么？", self.documents)
+
+        self.assertIn("课堂向量索引", result.answer)
+        self.assertEqual(result.source_refs[0].id, "seg_001")
+        self.assertEqual(result.warnings, [])
+
+    def test_query_compacts_llamaindex_source_text(self) -> None:
+        service = self._service()
+        documents = [
+            RagDocument(
+                text="傅里叶变换" + " 长字幕" * 100,
+                metadata={
+                    "session_id": "lec_llama_001",
+                    "type": "structured_note",
+                    "source_id": "structured_notes",
+                    "display_text": "结构化课堂笔记：傅里叶变换是本节重点。",
+                },
+            )
+        ]
+
+        result = service.query("傅里叶变换", documents)
+
+        self.assertEqual(
+            result.source_refs[0].text,
+            "结构化课堂笔记：傅里叶变换是本节重点。",
+        )
 
     def test_query_falls_back_to_lexical_when_llamaindex_fails(self) -> None:
         service = LlamaIndexQueryService(

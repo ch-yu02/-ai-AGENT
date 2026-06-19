@@ -12,15 +12,23 @@ Phase 7 的目标是让用户能问“之前哪节课讲过某个知识点”。
 
 import os
 import re
+import hashlib
+import json
 from dataclasses import dataclass
+from typing import Any
 
+from backend.app import prompts
+from backend.app.llm import CloudLLMError
 from backend.app.models import (
     ClassroomContext,
     ImageCapture,
     KnowledgeExtraction,
+    KnowledgeEdge,
+    KnowledgeNode,
     KnowledgeTree,
     TimelineItem,
     TranscriptSegment,
+    utc_now_iso,
 )
 from backend.app.rag import (
     GlobalIndexHit,
@@ -28,9 +36,18 @@ from backend.app.rag import (
     RagDocument,
     build_session_documents,
 )
+from backend.app.rag.query_service import compact_source_ref_text
+from backend.app.skills.llm_support import (
+    JsonLLMClient,
+    build_default_llm_client,
+    require_string,
+)
 from backend.app.storage import LocalStorage
 
 from .schemas import (
+    CourseKnowledgeTreeResponse,
+    CourseListResponse,
+    CourseSummary,
     GlobalSearchHit,
     GlobalSearchRequest,
     GlobalSearchResponse,
@@ -49,6 +66,16 @@ class _ScoredDocument:
     document: RagDocument
 
 
+@dataclass(frozen=True)
+class _GlobalDocumentSnapshot:
+    """Cached cross-classroom documents for global search."""
+
+    fingerprint: str
+    records: list[dict]
+    documents: list[RagDocument]
+    owners: list[dict]
+
+
 class GlobalSearchService:
     """在所有已保存历史课堂中搜索课堂资料。"""
 
@@ -56,9 +83,12 @@ class GlobalSearchService:
         self,
         storage: LocalStorage,
         global_index_service: GlobalLlamaIndexService | None = None,
+        llm_client: JsonLLMClient | None = None,
     ) -> None:
         self.storage = storage
         self._global_index_service = global_index_service
+        self._llm_client = llm_client
+        self._documents_cache: _GlobalDocumentSnapshot | None = None
 
     def search(self, request: GlobalSearchRequest) -> GlobalSearchResponse:
         """执行跨课堂搜索。
@@ -83,25 +113,9 @@ class GlobalSearchService:
             )
 
         summaries = self.storage.list_sessions()
-        if request.course:
-            expected_course = request.course.strip().lower()
-            summaries = [
-                summary
-                for summary in summaries
-                if (summary.session.course or "").lower() == expected_course
-            ]
-        if request.date_from or request.date_to:
-            summaries = [
-                summary
-                for summary in summaries
-                if self._is_in_date_range(
-                    summary.session.start_time,
-                    request.date_from,
-                    request.date_to,
-                )
-            ]
+        filtered_summaries = self._filter_summaries(summaries, request)
 
-        if not summaries:
+        if not filtered_summaries:
             return GlobalSearchResponse(
                 query=query,
                 answer="没有可搜索的历史课堂。",
@@ -110,8 +124,12 @@ class GlobalSearchService:
             )
 
         warnings: list[str] = []
+        snapshot = self._global_document_snapshot(summaries, warnings)
+        allowed_session_ids = {
+            summary.session.session_id for summary in filtered_summaries
+        }
         global_index_documents, global_rag_documents, document_owners = (
-            self._build_global_documents(summaries, warnings)
+            self._filter_snapshot(snapshot, allowed_session_ids)
         )
 
         keywords = self._keywords(query)
@@ -129,8 +147,6 @@ class GlobalSearchService:
                     document=document,
                 )
             )
-
-        self.storage.save_global_search_index(global_index_documents)
 
         vector_response = self._search_global_index(
             query=query,
@@ -164,6 +180,163 @@ class GlobalSearchService:
             warnings=warnings,
         )
 
+    def review(self, request: GlobalSearchRequest) -> GlobalSearchResponse:
+        """Answer a post-class review question from cross-classroom sources."""
+        response = self.search(request)
+        if not response.hits:
+            return response
+
+        client = self._client_or_none()
+        if client is None:
+            response.warnings.append("未配置 LLM，复习问答已返回跨课堂检索摘要。")
+            return response
+
+        try:
+            payload = client.complete_json(
+                system_prompt=prompts.history_review_qa_system_prompt(),
+                user_prompt=prompts.history_review_qa_user_prompt(
+                    student_prompt=request.query,
+                    hits=[
+                        {
+                            "session_id": hit.session_id,
+                            "title": hit.title,
+                            "course": hit.course,
+                            "type": hit.source_ref.type,
+                            "id": hit.source_ref.id,
+                            "ts": hit.source_ref.ts,
+                            "text": hit.source_ref.text,
+                        }
+                        for hit in response.hits[: request.limit]
+                    ],
+                ),
+                temperature=0.1,
+            )
+            response.answer = require_string(payload, "answer")
+        except (CloudLLMError, KeyError, TypeError, ValueError) as exc:
+            response.warnings.append(f"复习问答模型生成失败，已退回检索摘要：{exc}")
+        return response
+
+    def list_courses(self) -> CourseListResponse:
+        """Aggregate saved classroom history by course."""
+        warnings: list[str] = []
+        summaries = self.storage.list_sessions()
+        grouped: dict[str, dict[str, Any]] = {}
+
+        for summary in summaries:
+            course = _course_name(summary.session.course)
+            bucket = grouped.setdefault(
+                course,
+                {
+                    "course": course,
+                    "sessions": [],
+                    "node_keys": set(),
+                    "edge_keys": set(),
+                },
+            )
+            bucket["sessions"].append(summary.session)
+            try:
+                detail = self.storage.read_session(summary.session.session_id)
+            except (FileNotFoundError, ValueError) as exc:
+                warnings.append(f"跳过损坏的历史课堂 {summary.session.session_id}：{exc}")
+                continue
+            bucket["node_keys"].update(
+                _normalize_label(node.label) for node in detail.knowledge_graph.nodes
+            )
+            bucket["edge_keys"].update(
+                _edge_key(detail.knowledge_graph, edge)
+                for edge in detail.knowledge_graph.edges
+            )
+
+        courses: list[CourseSummary] = []
+        for bucket in grouped.values():
+            sessions = sorted(
+                bucket["sessions"],
+                key=lambda session: session.start_time,
+                reverse=True,
+            )
+            latest = sessions[0] if sessions else None
+            courses.append(
+                CourseSummary(
+                    course=bucket["course"],
+                    session_count=len(sessions),
+                    latest_session_id=latest.session_id if latest else None,
+                    latest_title=latest.title if latest else None,
+                    latest_start_time=latest.start_time if latest else None,
+                    node_count=len(bucket["node_keys"]),
+                    edge_count=len(bucket["edge_keys"]),
+                )
+            )
+
+        return CourseListResponse(
+            courses=sorted(
+                courses,
+                key=lambda item: item.latest_start_time or "",
+                reverse=True,
+            ),
+            warnings=warnings,
+        )
+
+    def merged_course_tree(self, course: str) -> CourseKnowledgeTreeResponse:
+        """Merge saved knowledge graphs for one course into a lightweight tree."""
+        expected = _course_name(course)
+        warnings: list[str] = []
+        summaries = [
+            summary
+            for summary in self.storage.list_sessions()
+            if _course_name(summary.session.course) == expected
+        ]
+        merged = KnowledgeTree(session_id=f"course_{_safe_slug(expected)}")
+        node_by_key: dict[str, KnowledgeNode] = {}
+        edge_keys: set[tuple[str, str, str]] = set()
+
+        for summary in summaries:
+            try:
+                detail = self.storage.read_session(summary.session.session_id)
+            except (FileNotFoundError, ValueError) as exc:
+                warnings.append(f"跳过损坏的历史课堂 {summary.session.session_id}：{exc}")
+                continue
+            source_node_map: dict[str, str] = {}
+            for node in detail.knowledge_graph.nodes:
+                key = _normalize_label(node.label)
+                existing = node_by_key.get(key)
+                if existing is None:
+                    copied = node.model_copy(deep=True)
+                    copied.node_id = f"course_node_{_safe_slug(node.label)}"
+                    merged.nodes.append(copied)
+                    node_by_key[key] = copied
+                    existing = copied
+                else:
+                    _merge_node(existing, node)
+                source_node_map[node.node_id] = existing.node_id
+
+            for edge in detail.knowledge_graph.edges:
+                source = source_node_map.get(edge.source)
+                target = source_node_map.get(edge.target)
+                if source is None or target is None or source == target:
+                    continue
+                key = (source, target, edge.relation)
+                if key in edge_keys:
+                    continue
+                edge_keys.add(key)
+                copied_edge = edge.model_copy(deep=True)
+                copied_edge.edge_id = (
+                    f"course_edge_{_safe_slug(source + '_' + edge.relation + '_' + target)}"
+                )
+                copied_edge.source = source
+                copied_edge.target = target
+                merged.edges.append(copied_edge)
+
+        _recompute_course_tree_roots(merged)
+        if merged.nodes or merged.edges:
+            merged.version = 1
+            merged.updated_at = utc_now_iso()
+        return CourseKnowledgeTreeResponse(
+            course=expected,
+            session_count=len(summaries),
+            knowledge_graph=merged,
+            warnings=warnings,
+        )
+
     def rebuild_global_index(self, *, build_llamaindex: bool = False) -> dict[str, object]:
         """Rebuild the auditable global index snapshot and optional vector index.
 
@@ -176,7 +349,14 @@ class GlobalSearchService:
         """
         warnings: list[str] = []
         summaries = self.storage.list_sessions()
-        records, documents, _ = self._build_global_documents(summaries, warnings)
+        snapshot = self._global_document_snapshot(
+            summaries,
+            warnings,
+            force=True,
+            persist=False,
+        )
+        records = snapshot.records
+        documents = snapshot.documents
         documents_path = self.storage.save_global_search_index(records)
         result: dict[str, object] = {
             "document_count": len(records),
@@ -208,6 +388,122 @@ class GlobalSearchService:
                 }
 
         return result
+
+    def _filter_summaries(
+        self,
+        summaries,
+        request: GlobalSearchRequest,
+    ) -> list:
+        """Apply request filters to history summaries."""
+        filtered = list(summaries)
+        if request.course:
+            expected_course = request.course.strip().lower()
+            filtered = [
+                summary
+                for summary in filtered
+                if (summary.session.course or "").lower() == expected_course
+            ]
+        if request.date_from or request.date_to:
+            filtered = [
+                summary
+                for summary in filtered
+                if self._is_in_date_range(
+                    summary.session.start_time,
+                    request.date_from,
+                    request.date_to,
+                )
+            ]
+        return filtered
+
+    def _global_document_snapshot(
+        self,
+        summaries,
+        warnings: list[str],
+        *,
+        force: bool = False,
+        persist: bool = True,
+    ) -> _GlobalDocumentSnapshot:
+        """Return cached global documents, rebuilding only when history changed."""
+        fingerprint = self._history_fingerprint(summaries)
+        if (
+            not force
+            and self._documents_cache is not None
+            and self._documents_cache.fingerprint == fingerprint
+        ):
+            return self._documents_cache
+
+        records, documents, owners = self._build_global_documents(summaries, warnings)
+        snapshot = _GlobalDocumentSnapshot(
+            fingerprint=fingerprint,
+            records=records,
+            documents=documents,
+            owners=owners,
+        )
+        if persist:
+            self.storage.save_global_search_index(records)
+        self._documents_cache = snapshot
+        return snapshot
+
+    def _filter_snapshot(
+        self,
+        snapshot: _GlobalDocumentSnapshot,
+        allowed_session_ids: set[str],
+    ) -> tuple[list[dict], list[RagDocument], list[dict]]:
+        """Filter cached global documents to a request's session subset."""
+        records: list[dict] = []
+        documents: list[RagDocument] = []
+        owners: list[dict] = []
+        for record, document, owner in zip(
+            snapshot.records,
+            snapshot.documents,
+            snapshot.owners,
+            strict=False,
+        ):
+            if owner["session_id"] not in allowed_session_ids:
+                continue
+            records.append(record)
+            documents.append(document)
+            owners.append(owner)
+        return records, documents, owners
+
+    def _history_fingerprint(self, summaries) -> str:
+        """Create a cheap fingerprint for saved sessions and search inputs."""
+        entries: list[dict[str, object]] = []
+        for summary in sorted(
+            summaries,
+            key=lambda item: item.session.session_id,
+        ):
+            session_id = summary.session.session_id
+            session_dir = self.storage.session_dir(session_id)
+            entries.append(
+                {
+                    "session": summary.session.model_dump(mode="json"),
+                    "event_count": summary.event_count,
+                    "files": {
+                        name: self._file_signature(session_dir / filename)
+                        for name, filename in {
+                            "metadata": "metadata.json",
+                            "timeline": "timeline.json",
+                            "knowledge_graph": "knowledge_graph.json",
+                            "structured_notes": "structured_notes.md",
+                        }.items()
+                    },
+                }
+            )
+        encoded = json.dumps(entries, ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return hashlib.sha256(encoded).hexdigest()
+
+    def _file_signature(self, path) -> dict[str, object]:
+        """Return size/mtime data for cache invalidation."""
+        try:
+            stat = path.stat()
+        except OSError:
+            return {"exists": False}
+        return {
+            "exists": True,
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        }
 
     def _build_global_documents(
         self,
@@ -377,7 +673,10 @@ class GlobalSearchService:
                 type=str(metadata.get("type", "timeline")),
                 id=str(metadata.get("source_id", "unknown")),
                 ts=ts if isinstance(ts, int | float) else None,
-                text=item.document.text,
+                text=compact_source_ref_text(
+                    item.document.text,
+                    metadata=metadata,
+                ),
             ),
         )
 
@@ -392,9 +691,14 @@ class GlobalSearchService:
                 type=item.source_type,
                 id=item.source_id,
                 ts=item.ts,
-                text=item.text,
+                text=compact_source_ref_text(item.text),
             ),
         )
+
+    def _client_or_none(self) -> JsonLLMClient | None:
+        if self._llm_client is not None:
+            return self._llm_client
+        return build_default_llm_client()
 
     def _enrich_global_document(
         self,
@@ -490,6 +794,57 @@ class GlobalSearchService:
         """按命中关键词长度计算相关性分数。"""
         normalized = text.lower()
         return sum(len(keyword) for keyword in keywords if keyword in normalized)
+
+
+def _course_name(course: str | None) -> str:
+    value = (course or "").strip()
+    return value or "未命名课程"
+
+
+def _normalize_label(label: str) -> str:
+    return re.sub(r"[\s\-_（）()《》“”'\"，,。:：]+", "", label.strip().lower())
+
+
+def _safe_slug(value: str) -> str:
+    return (
+        re.sub(r"[^0-9A-Za-z\u4e00-\u9fff]+", "_", value.strip()).strip("_")
+        or "unknown"
+    )
+
+
+def _edge_key(graph: KnowledgeTree, edge: KnowledgeEdge) -> tuple[str, str, str]:
+    nodes = {node.node_id: node for node in graph.nodes}
+    source = nodes.get(edge.source)
+    target = nodes.get(edge.target)
+    return (
+        _normalize_label(source.label if source else edge.source),
+        _normalize_label(target.label if target else edge.target),
+        edge.relation,
+    )
+
+
+def _merge_node(target: KnowledgeNode, source: KnowledgeNode) -> None:
+    if source.summary and source.summary != target.summary:
+        target.summary = source.summary if not target.summary else target.summary
+    if source.importance is not None:
+        target.importance = max(target.importance or 0.0, source.importance)
+    existing_refs = {(ref.type, ref.id, ref.ts) for ref in target.source_refs}
+    for ref in source.source_refs:
+        key = (ref.type, ref.id, ref.ts)
+        if key in existing_refs:
+            continue
+        target.source_refs.append(ref)
+        existing_refs.add(key)
+    target.source_refs = target.source_refs[-3:]
+
+
+def _recompute_course_tree_roots(graph: KnowledgeTree) -> None:
+    targets = {edge.target for edge in graph.edges}
+    graph.root_nodes = [
+        node.node_id for node in graph.nodes if node.node_id not in targets
+    ]
+    for node in graph.nodes:
+        node.level = 0 if node.node_id in graph.root_nodes else 1
 
 
 __all__ = ["GlobalSearchService"]

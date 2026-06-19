@@ -19,6 +19,20 @@ from pydantic import BaseModel, Field
 
 from backend.app.models import ClassroomContext, KnowledgeEdge, KnowledgeNode, KnowledgeTree
 
+_STRUCTURED_NOTES_STOP_HEADINGS = (
+    "## 润色字幕",
+    "## 原始 WhisperLive 字幕",
+)
+_STRUCTURED_NOTES_METADATA_PREFIXES = (
+    "- 生成时间",
+    "- 更新状态",
+    "- 音频文件",
+    "- WhisperLive 模型",
+    "- 字幕段数",
+    "- 课程名称",
+    "- 原始字幕段数",
+)
+
 
 RagDocumentType = Literal[
     "segment",
@@ -104,13 +118,36 @@ def _structured_notes_document(
     课后问题。原始字幕仍保留为独立 segment 文档，便于追溯细节。
     """
     first_ts = context.transcript[0].start_ts if context.transcript else None
+    notes_text = _structured_notes_rag_text(structured_notes_markdown)
     return _document(
         session_id=context.session_id,
         source_type="structured_note",
         source_id="structured_notes",
-        text=f"结构化课堂笔记：\n{structured_notes_markdown}",
+        text=f"结构化课堂笔记：\n{notes_text}",
         ts=first_ts,
+        extra={"display_text": f"结构化课堂笔记：\n{notes_text}"},
     )
+
+
+def _structured_notes_rag_text(markdown: str) -> str:
+    """提取结构化笔记正文，排除完整字幕区块。
+
+    结构化笔记文件会同时保存“笔记”和“字幕”。RAG 已经为每条字幕建立 segment
+    文档，所以 structured_note 文档只保留摘要、要点、关键词等笔记内容。
+    """
+    lines: list[str] = []
+
+    for raw_line in markdown.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if any(line.startswith(heading) for heading in _STRUCTURED_NOTES_STOP_HEADINGS):
+            break
+        if any(line.startswith(prefix) for prefix in _STRUCTURED_NOTES_METADATA_PREFIXES):
+            continue
+        lines.append(line)
+
+    return "\n".join(lines).strip() or markdown.strip()
 
 
 def _visual_documents(context: ClassroomContext) -> list[RagDocument]:

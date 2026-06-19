@@ -233,6 +233,21 @@ class LocalStorage:
         """
         return self._read_json(self.session_dir(session_id) / "metadata.json")
 
+    def update_session_metadata(
+        self,
+        session_id: str,
+        updates: dict[str, object],
+    ) -> LectureSession:
+        """Update persisted ``metadata.json`` for a saved classroom."""
+        metadata_path = self._safe_session_dir(session_id) / "metadata.json"
+        session = LectureSession.model_validate(self._read_json(metadata_path))
+        if not updates:
+            return session
+
+        updated_session = session.model_copy(update=updates)
+        self._write_json(metadata_path, updated_session.model_dump())
+        return updated_session
+
     def list_sessions(self) -> list[SessionHistorySummary]:
         """Return summaries for all persisted sessions, newest first.
 

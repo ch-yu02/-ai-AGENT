@@ -54,6 +54,46 @@ class RagQueryServiceTest(unittest.TestCase):
         self.assertIn("没有在课堂资料中找到", result.answer)
         self.assertTrue(result.warnings)
 
+    def test_source_refs_use_compact_display_text(self) -> None:
+        long_text = "傅里叶变换" + "，包含完整字幕" * 80
+        result = self.service.query(
+            "傅里叶变换",
+            [
+                RagDocument(
+                    text=long_text,
+                    metadata={
+                        "session_id": "lec_query",
+                        "type": "structured_note",
+                        "source_id": "structured_notes",
+                        "display_text": "结构化课堂笔记：傅里叶变换用于频域分析。",
+                    },
+                )
+            ],
+        )
+
+        self.assertEqual(
+            result.source_refs[0].text,
+            "结构化课堂笔记：傅里叶变换用于频域分析。",
+        )
+        self.assertNotIn("完整字幕", result.answer)
+
+    def test_query_limits_source_refs_for_display(self) -> None:
+        documents = [
+            RagDocument(
+                text=f"傅里叶变换相关内容 {index}",
+                metadata={
+                    "session_id": "lec_query",
+                    "type": "segment",
+                    "source_id": f"seg_{index:03d}",
+                },
+            )
+            for index in range(5)
+        ]
+
+        result = self.service.query("傅里叶变换", documents, limit=5)
+
+        self.assertEqual(len(result.source_refs), 3)
+
 
 if __name__ == "__main__":
     unittest.main()

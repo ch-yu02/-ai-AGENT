@@ -924,6 +924,27 @@ def post_json(
     return json.loads(raw) if raw else {}
 
 
+def get_json(
+    base_url: str,
+    path: str,
+    *,
+    timeout: float,
+) -> Any:
+    """GET JSON from the EDU-Mate backend."""
+    url = base_url.rstrip("/") + path
+    request = Request(url, method="GET")
+
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            raw = response.read().decode("utf-8")
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"GET {url} failed: {exc.code} {detail}") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Cannot connect to backend at {url}: {exc}") from exc
+    return json.loads(raw) if raw else {}
+
+
 def send_event(
     *,
     base_url: str,
@@ -948,6 +969,75 @@ def send_event(
 def end_session(*, base_url: str, session_id: str, timeout: float) -> dict[str, Any]:
     """End the classroom through the existing backend API."""
     return post_json(base_url, f"/sessions/{session_id}/end", {}, timeout=timeout)
+
+
+def start_backend_session(
+    *,
+    base_url: str,
+    timeout: float,
+    title: str = "本地音频联调课堂",
+    course: str = "EDU-Mate Local Test",
+) -> dict[str, Any]:
+    """Create a backend recording session for local integration tests."""
+    return post_json(
+        base_url,
+        "/sessions/start",
+        {
+            "title": title,
+            "course": course,
+            "language": "zh-CN",
+            "created_by": "local-script",
+            "device_id": "local-audio-test",
+        },
+        timeout=timeout,
+    )
+
+
+def list_backend_recording_sessions(
+    *,
+    base_url: str,
+    timeout: float,
+) -> list[dict[str, Any]]:
+    """Return currently recording backend sessions, newest first."""
+    payload = get_json(base_url, "/sessions/recording", timeout=timeout)
+    if not isinstance(payload, list):
+        return []
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def resolve_backend_session_id(
+    *,
+    requested_session_id: str,
+    base_url: str,
+    timeout: float,
+    create_if_missing: bool = True,
+) -> str:
+    """Resolve ``auto``/empty session ids for local test scripts."""
+    requested = requested_session_id.strip()
+    if requested and requested.lower() != "auto":
+        return requested
+
+    sessions = list_backend_recording_sessions(base_url=base_url, timeout=timeout)
+    if sessions:
+        if len(sessions) > 1:
+            log(
+                "Found multiple recording sessions; using newest "
+                f"{sessions[0].get('session_id')}"
+            )
+        session_id = str(sessions[0].get("session_id") or "").strip()
+        if session_id:
+            log(f"Using existing recording session: {session_id}")
+            return session_id
+
+    if not create_if_missing:
+        raise RuntimeError("No recording backend session is available.")
+
+    session = start_backend_session(base_url=base_url, timeout=timeout)
+    session_id = str(session.get("session_id") or "").strip()
+    if not session_id:
+        raise RuntimeError("Backend did not return a session_id for the new session.")
+    log(f"Created backend test session: {session_id}")
+    return session_id
 
 
 def polished_or_raw_transcript(
@@ -1434,7 +1524,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Stream local audio through OpenVINO Whisper and Qwen into EDU-Mate."
     )
-    parser.add_argument("--session-id", required=True, help="Frontend-created session_id.")
+    parser.add_argument(
+        "--session-id",
+        default="auto",
+        help=(
+            "Frontend-created session_id. Use 'auto' or omit it to attach to the "
+            "newest recording backend session, creating one if none exists."
+        ),
+    )
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--input", default=str(DEFAULT_INPUT), help="Media file or directory.")
     parser.add_argument("--whisper-model", default=str(DEFAULT_WHISPER_MODEL))
@@ -1522,8 +1619,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 def config_from_args(args: argparse.Namespace) -> StreamConfig:
     """Build a typed config from parsed CLI args."""
+    session_id = resolve_backend_session_id(
+        requested_session_id=args.session_id,
+        base_url=args.base_url,
+        timeout=args.http_timeout,
+    )
     return StreamConfig(
-        session_id=args.session_id,
+        session_id=session_id,
         base_url=args.base_url,
         input_path=Path(args.input),
         whisper_model=Path(args.whisper_model),

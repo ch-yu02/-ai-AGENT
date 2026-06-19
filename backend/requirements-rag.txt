@@ -1,0 +1,13 @@
+# Optional vector-search dependencies for:
+#   RAG_QUERY_BACKEND=llamaindex
+#   GLOBAL_SEARCH_BACKEND=llamaindex
+#
+# Keep these separate from requirements.txt so the default backend remains
+# lightweight and deterministic on devices that do not need vector retrieval.
+# scripts/dev.sh install-rag installs CPU-only torch first on this hardware,
+# avoiding the much larger default CUDA torch dependency set.
+llama-index-core>=0.12.0
+llama-index-embeddings-huggingface>=0.5.0
+llama-index-embeddings-openai>=0.3.0
+sentence-transformers>=3.0.0
+socksio>=1.0.0

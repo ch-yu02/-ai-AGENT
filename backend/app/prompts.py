@@ -21,7 +21,7 @@ def summary_system_prompt() -> str:
 def summary_user_prompt(classroom_brief: str) -> str:
     """User prompt for post-class summary generation."""
     return (
-        "请用中文生成一份简洁课堂总结，包含重点、知识脉络和复习建议。"
+        "请使用课堂资料的主要授课语言生成一份简洁课堂总结，包含重点、知识脉络和复习建议。"
         "输出必须是 JSON，不要 Markdown code fence。\n\n"
         f"{classroom_brief}"
     )
@@ -59,7 +59,7 @@ def quiz_system_prompt() -> str:
 def quiz_user_prompt(classroom_brief: str) -> str:
     """User prompt for quiz generation."""
     return (
-        "请生成 3 到 5 道中文自测题，优先覆盖关键概念。输出必须是 JSON，"
+        "请使用课堂资料的主要授课语言生成 3 到 5 道自测题，优先覆盖关键概念。输出必须是 JSON，"
         "不要 Markdown code fence。\n\n"
         f"{classroom_brief}"
     )
@@ -71,6 +71,38 @@ def grounded_qa_system_prompt() -> str:
         "你是课堂答疑助手。必须优先依据课堂来源回答；可以使用你的通用"
         "知识补充解释，但必须明确区分课堂内容和补充解释。不要编造课堂"
         "中没有出现过的来源。请输出 JSON object，字段 answer。"
+    )
+
+
+def strict_qa_system_prompt() -> str:
+    """System prompt for source-only classroom QA."""
+    return (
+        "你是课堂答疑助手。只能依据用户提供的课堂来源回答，禁止使用来源外"
+        "常识、猜测或补全。若来源不足以回答问题，请直接说明“课堂资料中没有"
+        "足够依据”。请输出 JSON object，字段 answer。"
+    )
+
+
+def strict_qa_user_prompt(
+    *,
+    student_prompt: str,
+    retrieved_answer: str,
+    source_refs: Sequence[Mapping[str, object]],
+) -> str:
+    """User prompt for source-only classroom QA."""
+    refs = "\n".join(
+        f"- {item.get('type')}:"
+        f"{item.get('id')}; ts={item.get('ts')}; text={item.get('text')}"
+        for item in source_refs
+    )
+    return (
+        f"学生问题：{student_prompt}\n\n"
+        f"检索摘要：{retrieved_answer}\n\n"
+        "课堂来源：\n"
+        f"{refs}\n\n"
+        "请使用课堂来源的主要授课语言给出自然、连贯、适合学生复习的回答。"
+        "只能使用上面课堂来源中的信息，不要增加来源外解释。"
+        "如果来源不足，请说明不足并列出已经能确认的内容。"
     )
 
 
@@ -91,7 +123,44 @@ def grounded_qa_user_prompt(
         f"课堂检索回答：{retrieved_answer}\n\n"
         "课堂来源：\n"
         f"{refs}\n\n"
-        "请用中文回答，格式上明确包含“根据课堂内容”和“补充解释”。"
+        "请使用课堂来源的主要授课语言回答，格式上明确区分课堂依据和补充解释。"
+    )
+
+
+def history_review_qa_system_prompt() -> str:
+    """System prompt for cross-classroom review QA."""
+    return (
+        "你是课后复习答疑助手。只能基于提供的历史课堂命中来源回答。"
+        "请把多节课中相互相关的内容整理成清晰复习回答，可以按课程或课堂组织。"
+        "禁止加入来源外知识；如果来源不足，请说明不足。"
+        "请输出 JSON object，字段 answer。"
+    )
+
+
+def history_review_qa_user_prompt(
+    *,
+    student_prompt: str,
+    hits: Sequence[Mapping[str, object]],
+) -> str:
+    """User prompt for cross-classroom review QA."""
+    hit_lines = "\n".join(
+        "- "
+        f"session={item.get('session_id')}; "
+        f"course={item.get('course') or '未命名课程'}; "
+        f"title={item.get('title')}; "
+        f"source={item.get('type')}:{item.get('id')}; "
+        f"ts={item.get('ts')}; "
+        f"text={item.get('text')}"
+        for item in hits
+    )
+    return (
+        f"复习问题：{student_prompt}\n\n"
+        "历史课堂命中来源：\n"
+        f"{hit_lines or '- none'}\n\n"
+        "请使用历史课堂命中来源的主要授课语言回答。要求：\n"
+        "1. 先给直接答案。\n"
+        "2. 再按课堂或课程列出依据。\n"
+        "3. 如果多个来源重复，只合并表达，不要重复堆砌。"
     )
 
 
@@ -107,6 +176,10 @@ def llm_knowledge_extractor_system_prompt() -> str:
         "importance:number optional}. "
         "Use only the provided classroom transcript/OCR/caption sources. "
         "Do not invent source ids. Prefer concise Chinese entity names. "
+        "Do not create generic or placeholder entities such as 课程, 课堂, 内容, "
+        "知识点, 概念, 重点, 问题, 例子, 方法, ent_1, e1, or 概念名. "
+        "An entity name must be a concrete course concept, event, person, formula, "
+        "term, theory, method, or named topic. "
         "Relations must use snake_case labels such as defines, mentions, "
         "related_to, maps_to, belongs_to, part_of, derives_from."
     )
@@ -160,14 +233,23 @@ def markdown_knowledge_tree_system_prompt() -> str:
         "source_segment_ids must list only the few direct supporting subtitle ids, "
         "at most 5, selected from the recent subtitle window; never return the "
         "full subtitle list. "
-        "Prefer Chinese labels. Make hierarchy parent-to-child: "
+        "Use the main teaching language of the provided notes/subtitles for "
+        "entity names, descriptions, session_title, and course. "
+        "Make hierarchy parent-to-child: "
         "course/topic contains subtopic/concept. Relations should use "
         "snake_case labels such as contains, defines, causes, example_of, "
-        "contrasts_with, leads_to, related_to. JSON schema: "
+        "contrasts_with, leads_to, related_to. "
+        "Do not create generic or placeholder entities such as 课程, 课堂, 内容, "
+        "知识点, 概念, 重点, 问题, 例子, 方法, ent_1, e1, or 概念名; "
+        "only extract concrete course concepts, events, people, formulas, terms, "
+        "theories, methods, or named topics. For final snapshots, infer "
+        "session_title as a short classroom title and course as the broader "
+        "course/subject name when directly supported by the notes; otherwise "
+        "return null. JSON schema: "
         "{extraction_id?:string, source_segment_ids:string[], "
         "entities:[{entity_id?:string,name:string,type:string,description?:string}], "
         "relations:[{source:string,target:string,relation:string}], "
-        "importance?:number}."
+        "importance?:number, session_title?:string|null, course?:string|null}."
     )
 
 
@@ -294,6 +376,9 @@ def local_qwen_extraction_prompt(
         "}\n"
         "要求：\n"
         "- entity name 使用简洁中文课堂术语。\n"
+        "- 不要把 课程、课堂、内容、知识点、概念、重点、问题、例子、方法、"
+        "ent_1、e1、概念名 这类泛化词或占位符作为实体。\n"
+        "- 实体必须是具体课程概念、事件、人物、公式、术语、理论、方法或有名称的主题。\n"
         "- relation 使用 snake_case 英文标签，例如 defines, mentions, related_to, "
         "belongs_to, part_of, causes, contrasts_with。\n"
         f"- source_segment_ids 只能从这些 ID 中选择：{allowed_ids}。\n"
@@ -329,38 +414,38 @@ def qwen_markdown_notes_prompt(
     )
     terms = "、".join(domain_terms)
     return (
-        "你是一个课堂语音转录助手兼课堂笔记整理助手。"
+        "你是一个课堂笔记整理助手。"
         "系统会每隔一段时间把当前累计的 WhisperLive 字幕发给你，"
         "请把它整理成会持续更新的课堂笔记，用于记录课堂内容、重点、概念和老师强调的备考信息。"
-        "请只根据给定字幕做课堂转录整理：补充标点、修正明显语音识别错别字、合并重复片段，"
-        "并生成结构化 Markdown 所需 JSON。\n"
+        "请只根据给定字幕整理结构化课堂笔记，并生成结构化 Markdown 所需 JSON。\n"
+        "输出语言必须使用授课内容的主要语言；如果课堂主要使用英文，就输出英文笔记；"
+        "如果课堂主要使用中文，就输出中文笔记。\n"
         "严格限制：不得扩写，不得添加字幕中没有的信息，不得编造例子；"
         "即使你知道相关背景知识，也不能把字幕没有说出的内容写进笔记。"
         "如果内容不足，就保持简短。\n"
         "整理目标：像认真听课的学生记笔记一样，优先保留课堂主线、知识点、定义、"
         "因果关系、老师强调的重点和可复习的条目；不要写成宣传文案或总结报告。\n"
+        "不要输出逐句润色字幕，不要改写整段 WhisperLive 字幕；只在 summary、sections、"
+        "keywords 这些笔记字段中做必要整理。\n"
         "可选课程关键词如下；如果未提供关键词，就只能依据字幕上下文做通用纠错："
         f"{terms or '未提供'}。\n"
         "Few-shot 校准规则：\n"
         "- 当课程关键词与 Whisper 字幕存在明显同音、近音、漏字或错字关系，"
-        "并且上下文支持时，可把字幕修正为课程关键词。例如关键词“线性代数”，"
-        "字幕“线形代数”可修正为“线性代数”。\n"
+        "并且上下文支持时，可在笔记条目中使用正确课程关键词。例如关键词“线性代数”，"
+        "字幕“线形代数”可在笔记中整理为“线性代数”。\n"
         "- 当关键词“薛定谔方程”与字幕“学定额方程”在发音和上下文上明显对应，"
-        "可修正为“薛定谔方程”。\n"
-        "- 即使没有课程关键词，只要整句上下文和发音明显支持，也可以修正常见词或课堂术语，"
-        "例如“苏晨克”可修正为“速成课”，“靠点/烤点”可修正为“考点”。\n"
-        "- clean_transcript 允许较大的字面修改来修正明显 ASR 错误，但信息量必须与原字幕一致；"
-        "候选修正会改变原意时，保持原字幕含义，不要猜测。\n"
-        "这些保守修正规则必须同时应用到 title、summary、sections、keywords、clean_transcript。\n"
-        "每个 summary 条目、section bullet、clean_transcript 句子都必须能在原始字幕中找到直接依据。\n"
+        "可在笔记中整理为“薛定谔方程”。\n"
+        "- 即使没有课程关键词，只要上下文和发音明显支持，也可以在笔记中修正常见词或课堂术语，"
+        "例如“苏晨克”可整理为“速成课”，“靠点/烤点”可整理为“考点”。\n"
+        "- 候选修正会改变原意时，保持原字幕含义，不要猜测。\n"
+        "这些保守修正规则只应用到 summary、sections、keywords。\n"
+        "每个 summary 条目和 section bullet 都必须能在原始字幕中找到直接依据。\n"
         "只输出一个 JSON object，不要 Markdown，不要解释。\n"
         "JSON schema:\n"
         "{\n"
-        '  "title": "简短标题",\n'
         '  "summary": ["要点1", "要点2"],\n'
         '  "sections": [{"heading": "小节标题", "bullets": ["条目"]}],\n'
-        '  "keywords": ["关键词"],\n'
-        '  "clean_transcript": ["润色后的逐句字幕"]\n'
+        '  "keywords": ["关键词"]\n'
         "}\n\n"
         "WhisperLive 字幕:\n"
         f"{transcript}\n\n"
@@ -373,7 +458,7 @@ def qwen_markdown_notes_repair_prompt(raw_text: str) -> str:
     return (
         "下面文本本应是课堂笔记 JSON，但格式不合法。"
         "请只输出合法 JSON object，不要解释，不要 Markdown。"
-        "必须包含 title、summary、sections、keywords、clean_transcript 字段。\n\n"
+        "必须包含 summary、sections、keywords 字段。\n\n"
         f"原始文本:\n{raw_text}\n\n"
         "合法 JSON:"
     )

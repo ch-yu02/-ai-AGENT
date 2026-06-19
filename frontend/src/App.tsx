@@ -8,15 +8,16 @@ import { KnowledgeGraphPanel } from "./components/KnowledgeGraphPanel";
 import { PostClassArtifactsPanel } from "./components/PostClassArtifactsPanel";
 import { RealtimeTranscriptPanel } from "./components/RealtimeTranscriptPanel";
 import { StatusStrip } from "./components/StatusStrip";
-import { TimelinePanel } from "./components/TimelinePanel";
 import { VisualOcrPanel } from "./components/VisualOcrPanel";
 import {
   ApiError,
   deleteHistorySession,
   endSession,
   getHistorySession,
+  listRecordingSessions,
   listHistorySessions,
   startSession,
+  updateSessionMetadata,
 } from "./services/api";
 import { connectClassroomSocket } from "./services/websocket";
 import { classroomReducer, initialDashboardState } from "./stores/classroomStore";
@@ -34,6 +35,8 @@ function App() {
   // 开始/结束课堂都是异步 HTTP 请求。这个状态用于禁用按钮，避免用户
   // 连续点击导致重复创建 session 或重复结束课堂。
   const [isSessionRequestPending, setIsSessionRequestPending] = useState(false);
+  const [isAttachRequestPending, setIsAttachRequestPending] = useState(false);
+  const [isRenameRequestPending, setIsRenameRequestPending] = useState(false);
 
   // 轻量级页面提示。当前只显示 API 成功/失败信息；后续也可以显示
   // WebSocket 断线、mock sender 联调提示等运行状态。
@@ -72,6 +75,8 @@ function App() {
     const deepLink = parseHistoryDeepLink();
     if (deepLink) {
       void handleOpenHistory(deepLink.sessionId, deepLink.sourceRef);
+    } else {
+      void handleAttachRecordingSession({ silent: true });
     }
 
     return () => {
@@ -188,6 +193,11 @@ function App() {
 
     if (message.type === "session.ended") {
       setStatusMessage("收到课堂结束广播。");
+      return;
+    }
+
+    if (message.type === "session.updated") {
+      setStatusMessage("课堂名称已自动更新。");
     }
   }
 
@@ -217,6 +227,56 @@ function App() {
       setStatusMessage(formatApiError(error, "开始课堂失败"));
     } finally {
       setIsSessionRequestPending(false);
+    }
+  }
+
+  // 接入已经存在的 recording session：
+  // - 前端先开始课堂时，脚本可以自动发现它；
+  // - 脚本先自动创建课堂时，前端打开后可以自动或手动接入它。
+  async function handleAttachRecordingSession(
+    options: { silent?: boolean } = {},
+  ) {
+    if (state.session?.status === "recording") {
+      if (!options.silent) {
+        setStatusMessage("当前已经接入录制中的课堂。");
+      }
+      return;
+    }
+
+    setIsAttachRequestPending(true);
+    if (!options.silent) {
+      setStatusMessage(null);
+    }
+
+    try {
+      const sessions = await listRecordingSessions();
+      const session = sessions[0];
+      if (!session) {
+        if (!options.silent) {
+          setStatusMessage("当前没有正在录制的课堂。");
+        }
+        return;
+      }
+
+      dispatch({
+        type: "session.started",
+        session,
+      });
+      setSelectedHistoryId(null);
+      setFocusedSource(null);
+      clearHistoryDeepLink();
+      connectWebSocket(session.session_id);
+      setStatusMessage(
+        options.silent
+          ? `已自动接入录制课堂：${session.session_id}`
+          : `已接入录制课堂：${session.session_id}`,
+      );
+    } catch (error) {
+      if (!options.silent) {
+        setStatusMessage(formatApiError(error, "接入当前课堂失败"));
+      }
+    } finally {
+      setIsAttachRequestPending(false);
     }
   }
 
@@ -251,6 +311,41 @@ function App() {
       setStatusMessage(formatApiError(error, "结束课堂失败"));
     } finally {
       setIsSessionRequestPending(false);
+    }
+  }
+
+  async function handleRenameSession(title: string, course: string | null) {
+    if (!state.session) {
+      return;
+    }
+
+    setIsRenameRequestPending(true);
+    setStatusMessage(null);
+
+    try {
+      const session = await updateSessionMetadata(state.session.session_id, {
+        title,
+        course,
+      });
+      dispatch({
+        type: "session.updated",
+        session,
+      });
+      setHistorySessions((current) =>
+        current.map((item) =>
+          item.session.session_id === session.session_id
+            ? {
+                ...item,
+                session,
+              }
+            : item,
+        ),
+      );
+      setStatusMessage("课堂名称已更新。");
+    } catch (error) {
+      setStatusMessage(formatApiError(error, "更新课堂名称失败"));
+    } finally {
+      setIsRenameRequestPending(false);
     }
   }
 
@@ -353,8 +448,12 @@ function App() {
         <ClassroomControls
           session={state.session}
           isBusy={isSessionRequestPending}
+          isAttachBusy={isAttachRequestPending}
+          isRenameBusy={isRenameRequestPending}
           onStart={handleStartSession}
+          onAttach={() => void handleAttachRecordingSession()}
           onEnd={handleEndSession}
+          onRename={(title, course) => void handleRenameSession(title, course)}
         />
       </section>
 
@@ -382,13 +481,12 @@ function App() {
           onDelete={handleDeleteHistory}
         />
 
-        {/* 四个数据面板共享 App 状态，但组件内部不直接请求后端。 */}
+        {/* 数据面板共享 App 状态，但组件内部不直接请求后端。 */}
         <section className="dashboard-grid" aria-label="课堂看板内容">
           <RealtimeTranscriptPanel
             focusedSource={focusedSource}
             transcript={state.transcript}
           />
-          <TimelinePanel focusedSource={focusedSource} timeline={state.timeline} />
           <VisualOcrPanel focusedSource={focusedSource} visuals={state.visuals} />
           <KnowledgeGraphPanel
             focusedSource={focusedSource}

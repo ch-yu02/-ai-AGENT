@@ -1,8 +1,13 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
-import { searchAcrossClassrooms } from "../services/agentApi";
+import {
+  listCourseSummaries,
+  reviewAcrossClassrooms,
+  searchAcrossClassrooms,
+} from "../services/agentApi";
 import { ApiError } from "../services/api";
 import type {
+  CourseSummary,
   GlobalSearchHit,
   GlobalSearchResponse,
   GlobalSearchSourceRef,
@@ -21,6 +26,8 @@ type GlobalSearchPanelProps = {
   isOpenDisabled: boolean;
 };
 
+type SearchMode = "search" | "review";
+
 export function GlobalSearchPanel({
   onOpenSession,
   isOpenDisabled,
@@ -31,7 +38,34 @@ export function GlobalSearchPanel({
   const [dateTo, setDateTo] = useState("");
   const [response, setResponse] = useState<GlobalSearchResponse | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [mode, setMode] = useState<SearchMode>("search");
+  const [courses, setCourses] = useState<CourseSummary[]>([]);
+  const [isCourseLoading, setIsCourseLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    setIsCourseLoading(true);
+    listCourseSummaries()
+      .then((result) => {
+        if (isMounted) {
+          setCourses(result.courses);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setCourses([]);
+        }
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsCourseLoading(false);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   async function submitSearch() {
     const trimmedQuery = query.trim();
@@ -43,13 +77,17 @@ export function GlobalSearchPanel({
     setError(null);
 
     try {
-      const result = await searchAcrossClassrooms({
+      const searchRequest = {
         query: trimmedQuery,
         course: course.trim() || null,
         date_from: dateFrom || null,
         date_to: dateTo || null,
         limit: 8,
-      });
+      };
+      const result =
+        mode === "review"
+          ? await reviewAcrossClassrooms(searchRequest)
+          : await searchAcrossClassrooms(searchRequest);
       setResponse(result);
     } catch (caughtError) {
       setError(formatSearchError(caughtError));
@@ -63,11 +101,51 @@ export function GlobalSearchPanel({
       <div className="panel-header">
         <div>
           <h2 id="global-search-title">跨课堂搜索</h2>
-          <span>搜索已保存历史课程</span>
+          <span>{mode === "review" ? "基于历史来源复习问答" : "搜索已保存历史课程"}</span>
         </div>
       </div>
 
       <div className="global-search-body">
+        <div className="global-search-tools">
+          <div className="global-search-mode" role="group" aria-label="查询模式">
+            <button
+              className={`mode-toggle-button ${mode === "search" ? "active" : ""}`}
+              disabled={isLoading}
+              onClick={() => setMode("search")}
+              type="button"
+            >
+              搜索
+            </button>
+            <button
+              className={`mode-toggle-button ${mode === "review" ? "active" : ""}`}
+              disabled={isLoading}
+              onClick={() => setMode("review")}
+              type="button"
+            >
+              复习问答
+            </button>
+          </div>
+          {courses.length ? (
+            <div className="course-summary-row" aria-label="课程快捷过滤">
+              {courses.slice(0, 8).map((item) => (
+                <button
+                  className={`course-chip ${course === item.course ? "active" : ""}`}
+                  disabled={isLoading}
+                  key={item.course}
+                  onClick={() => setCourse(course === item.course ? "" : item.course)}
+                  type="button"
+                >
+                  <strong>{item.course}</strong>
+                  <span>
+                    {item.session_count}节 · {item.node_count}点
+                  </span>
+                </button>
+              ))}
+            </div>
+          ) : isCourseLoading ? (
+            <div className="course-summary-loading">读取课程中</div>
+          ) : null}
+        </div>
         <form
           className="global-search-form"
           onSubmit={(event) => {
@@ -102,7 +180,13 @@ export function GlobalSearchPanel({
             value={dateTo}
           />
           <button className="primary-button" disabled={!query.trim() || isLoading}>
-            {isLoading ? "搜索中" : "搜索"}
+            {isLoading
+              ? mode === "review"
+                ? "整理中"
+                : "搜索中"
+              : mode === "review"
+                ? "复习"
+                : "搜索"}
           </button>
         </form>
 
@@ -114,15 +198,19 @@ export function GlobalSearchPanel({
             response={response}
           />
         ) : (
-          <SearchEmpty />
+          <SearchEmpty mode={mode} />
         )}
       </div>
     </section>
   );
 }
 
-function SearchEmpty() {
-  return <div className="global-search-empty">搜索历史课堂中的知识点、作业或概念</div>;
+function SearchEmpty({ mode }: { mode: SearchMode }) {
+  return (
+    <div className="global-search-empty">
+      {mode === "review" ? "用历史课堂资料生成复习回答" : "搜索历史课堂中的知识点、作业或概念"}
+    </div>
+  );
 }
 
 function GlobalSearchResult({

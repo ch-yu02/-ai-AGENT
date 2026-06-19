@@ -34,7 +34,7 @@ class MarkdownKnowledgeTreeAgentTest(unittest.TestCase):
                 "entities": [
                     {"name": "傅里叶变换", "type": "concept", "description": "频域分析"},
                     {"name": "频域", "type": "concept"},
-                    {"name": "课堂没有的概念", "type": "concept"},
+                    {"name": "拉普拉斯变换", "type": "concept"},
                 ],
                 "relations": [
                     {
@@ -101,6 +101,87 @@ class MarkdownKnowledgeTreeAgentTest(unittest.TestCase):
         self.assertFalse(result.failed)
         self.assertEqual(result.markdown_hash, "hash_001")
         self.assertIn("already processed", result.warnings[0])
+
+    def test_returns_session_metadata_without_graph_items(self) -> None:
+        agent = MarkdownKnowledgeTreeAgent(
+            FakeJsonLLMClient(
+                {
+                    "session_title": "Fourier Transform Review",
+                    "course": "Signals and Systems",
+                    "entities": [],
+                    "relations": [],
+                }
+            )
+        )
+        request = NotesKnowledgeTreeUpdateRequest(
+            session_id="lec_notes",
+            snapshot_id="snap_meta",
+            markdown="# Classroom Notes\n\n- Fourier transform maps signals to frequency domain.",
+            source_segments=[
+                {
+                    "segment_id": "seg_001",
+                    "start_ts": 1.0,
+                    "end_ts": 3.0,
+                    "text": "Fourier transform maps signals to frequency domain.",
+                }
+            ],
+            update_status="final",
+        )
+
+        result = agent.extract(request, KnowledgeTree(session_id="lec_notes"))
+
+        self.assertIsNone(result.extraction)
+        self.assertFalse(result.failed)
+        self.assertEqual(result.session_title, "Fourier Transform Review")
+        self.assertEqual(result.course, "Signals and Systems")
+        self.assertIn("No grounded graph items", "\n".join(result.warnings))
+
+    def test_duplicate_graph_content_skips_second_snapshot(self) -> None:
+        client = FakeJsonLLMClient(
+            {
+                "entities": [{"name": "傅里叶变换", "type": "concept"}],
+                "relations": [],
+            }
+        )
+        agent = MarkdownKnowledgeTreeAgent(client)
+        graph = KnowledgeTree(session_id="lec_notes")
+        first_request = NotesKnowledgeTreeUpdateRequest(
+            session_id="lec_notes",
+            snapshot_id="snap_001",
+            markdown="# 课堂笔记\n\n- 傅里叶变换用于频域分析。",
+            markdown_hash="hash_001",
+            source_segments=[
+                {
+                    "segment_id": "seg_001",
+                    "start_ts": 1.0,
+                    "end_ts": 3.0,
+                    "text": "傅里叶变换用于频域分析。",
+                }
+            ],
+        )
+        second_request = NotesKnowledgeTreeUpdateRequest(
+            session_id="lec_notes",
+            snapshot_id="snap_002",
+            markdown="# 课堂笔记\n\n- 傅里叶变换用于频域分析。\n- 增加了课堂小结。",
+            markdown_hash="hash_002",
+            source_segments=[
+                {
+                    "segment_id": "seg_002",
+                    "start_ts": 4.0,
+                    "end_ts": 6.0,
+                    "text": "傅里叶变换用于频域分析。",
+                }
+            ],
+        )
+
+        first_result = agent.extract(first_request, graph)
+        second_result = agent.extract(second_request, graph)
+
+        self.assertIsNotNone(first_result.extraction)
+        self.assertIsNone(second_result.extraction)
+        self.assertFalse(second_result.failed)
+        self.assertIn("already processed", "\n".join(second_result.warnings))
+        self.assertEqual(len(client.calls), 2)
 
     def test_missing_or_overbroad_source_ids_fall_back_to_recent_subtitles(self) -> None:
         source_segments = [
@@ -192,6 +273,70 @@ class MarkdownKnowledgeTreeAgentTest(unittest.TestCase):
         self.assertIn("recent_source_subtitle_count: 2", prompt)
         self.assertIn("seg_006", prompt)
         self.assertNotIn("id=seg_001", prompt)
+
+    def test_filters_low_value_items_and_reuses_existing_labels(self) -> None:
+        client = FakeJsonLLMClient(
+            {
+                "source_segment_ids": ["seg_001"],
+                "entities": [
+                    {"name": "傅里叶变换概念", "type": "concept"},
+                    {"name": "知识点", "type": "concept"},
+                    {"name": "ent_1", "type": "concept"},
+                    {"name": "本节课重点", "type": "concept"},
+                    {"name": "频域分析", "type": "concept"},
+                ],
+                "relations": [
+                    {
+                        "source": "知识点",
+                        "target": "傅里叶变换",
+                        "relation": "related_to",
+                    },
+                    {
+                        "source": "ent_1",
+                        "target": "频域分析",
+                        "relation": "related_to",
+                    },
+                    {
+                        "source": "频域分析",
+                        "target": "傅里叶变换概念",
+                        "relation": "contains",
+                    },
+                ],
+            }
+        )
+        agent = MarkdownKnowledgeTreeAgent(client)
+        request = NotesKnowledgeTreeUpdateRequest(
+            session_id="lec_notes",
+            snapshot_id="snap_filter",
+            markdown="# 课堂笔记\n\n- 傅里叶变换用于频域分析，是本节课的知识点。",
+            source_segments=[
+                {
+                    "segment_id": "seg_001",
+                    "start_ts": 1.0,
+                    "end_ts": 5.0,
+                    "text": "傅里叶变换用于频域分析，是本节课的知识点。",
+                }
+            ],
+        )
+
+        result = agent.extract(
+            request,
+            KnowledgeTree(
+                session_id="lec_notes",
+                nodes=[KnowledgeNode(node_id="node_fourier", label="傅里叶变换")],
+            ),
+        )
+
+        self.assertIsNotNone(result.extraction)
+        assert result.extraction is not None
+        self.assertEqual(
+            [entity.name for entity in result.extraction.entities],
+            ["傅里叶变换", "频域分析"],
+        )
+        self.assertEqual(len(result.extraction.relations), 1)
+        self.assertEqual(result.extraction.relations[0].target, "傅里叶变换")
+        self.assertIn("Dropped low-value entity", "\n".join(result.warnings))
+        self.assertIn("Dropped low-value relation", "\n".join(result.warnings))
 
 
 if __name__ == "__main__":

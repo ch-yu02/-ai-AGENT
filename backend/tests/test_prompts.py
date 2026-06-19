@@ -43,6 +43,7 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("seg_local_whisper_0001", prompt)
         self.assertIn("entities", prompt)
         self.assertIn("relations", prompt)
+        self.assertIn("泛化词或占位符", prompt)
 
     def test_transcript_polish_prompt_allows_phonetic_correction_without_expansion(self) -> None:
         prompt = prompts.transcript_polish_prompt(
@@ -70,13 +71,14 @@ class PromptTemplatesTest(unittest.TestCase):
             domain_terms=["线性代数", "矩阵"],
         )
 
-        self.assertIn("课堂语音转录助手", prompt)
+        self.assertIn("课堂笔记整理助手", prompt)
         self.assertIn("课堂内容、重点", prompt)
         self.assertIn("Few-shot", prompt)
         self.assertIn("即使没有课程关键词", prompt)
-        self.assertIn("较大的字面修改", prompt)
+        self.assertIn("不要输出逐句润色字幕", prompt)
         self.assertIn("速成课", prompt)
-        self.assertIn("clean_transcript", prompt)
+        self.assertIn("输出语言必须使用授课内容的主要语言", prompt)
+        self.assertNotIn("clean_transcript", prompt)
         self.assertIn("线性代数、矩阵", prompt)
 
     def test_markdown_knowledge_tree_prompt_includes_existing_graph_context(self) -> None:
@@ -104,6 +106,9 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("full_structured_markdown_notes_context", prompt)
         self.assertIn("seg_001", prompt)
         self.assertIn("Return JSON only", prompt)
+        self.assertIn("generic or placeholder entities", prompts.markdown_knowledge_tree_system_prompt())
+        self.assertIn("session_title", prompts.markdown_knowledge_tree_system_prompt())
+        self.assertIn("main teaching language", prompts.markdown_knowledge_tree_system_prompt())
 
 
 if __name__ == "__main__":

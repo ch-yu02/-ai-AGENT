@@ -52,6 +52,7 @@ from backend.app.models import (
     SessionHistoryDetail,
     SessionHistoryListResponse,
     StartSessionRequest,
+    UpdateSessionRequest,
     WebSocketMessage,
     ImageCapture,
 )
@@ -110,6 +111,60 @@ async def start_session(request: StartSessionRequest) -> LectureSession:
         ),
     )
     return session
+
+
+@router.get("/recording", response_model=list[LectureSession])
+async def list_recording_sessions() -> list[LectureSession]:
+    """Return in-memory sessions that are still accepting realtime events.
+
+    This is mainly a local integration helper: file-stream scripts can attach to
+    the classroom the frontend has already started, and the frontend can attach
+    to a script-created test classroom without copying a session_id by hand.
+    """
+    sessions = [
+        session
+        for session in session_manager.list_sessions()
+        if session.status == "recording"
+    ]
+    return sorted(sessions, key=lambda session: session.start_time, reverse=True)
+
+
+@router.patch("/{session_id}", response_model=LectureSession)
+async def update_session(
+    session_id: str,
+    request: UpdateSessionRequest,
+) -> LectureSession:
+    """Update mutable classroom metadata such as title and course."""
+    updates = _session_metadata_updates(request)
+
+    updated_session: LectureSession | None = None
+    session_in_memory = True
+    try:
+        updated_session = session_manager.update_session_metadata(session_id, updates)
+    except SessionNotFoundError:
+        session_in_memory = False
+
+    if local_storage.session_exists(session_id):
+        try:
+            persisted_session = local_storage.update_session_metadata(session_id, updates)
+            if updated_session is None:
+                updated_session = persisted_session
+        except (FileNotFoundError, ValueError):
+            if not session_in_memory:
+                raise HTTPException(status_code=404, detail="Session not found")
+
+    if updated_session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    await websocket_manager.broadcast(
+        session_id,
+        WebSocketMessage(
+            type="session.updated",
+            session_id=session_id,
+            data={"session": updated_session.model_dump()},
+        ),
+    )
+    return updated_session
 
 
 # ── 查询会话 ──────────────────────────────────────────────────────
@@ -351,6 +406,24 @@ def _run_internal_knowledge_extraction(session_id: str, context) -> dict[str, ob
         "processed_source_ids": result.processed_source_ids,
         "errors": [error.model_dump() for error in result.errors],
     }
+
+
+def _session_metadata_updates(request: UpdateSessionRequest) -> dict[str, object]:
+    """Return sanitized metadata updates from a PATCH request."""
+    updates: dict[str, object] = {}
+    fields_set = request.model_fields_set
+
+    if "title" in fields_set:
+        title = (request.title or "").strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="title cannot be empty")
+        updates["title"] = title[:80]
+
+    if "course" in fields_set:
+        course = (request.course or "").strip() if request.course is not None else ""
+        updates["course"] = course[:80] or None
+
+    return updates
 
 
 def _image_path_for_session(session_id: str, image_id: str) -> str | None:

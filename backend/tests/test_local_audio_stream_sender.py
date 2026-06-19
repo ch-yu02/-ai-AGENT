@@ -3,6 +3,7 @@ import threading
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import patch
 
 from backend.app.core import ContextManager, KnowledgeGraphManager
 from backend.app.models import RealtimeEvent
@@ -22,6 +23,7 @@ from backend.scripts.local_audio_stream_sender import (
     normalize_extraction_payload,
     normalize_polished_sentences,
     parse_json_object,
+    resolve_backend_session_id,
     run_audio_stream,
     segment_id_for_chunk,
     sliding_chunk_time_ranges,
@@ -123,6 +125,36 @@ class RepairingQwenExtractor(OpenVINOQwenExtractor):
 
 
 class LocalAudioStreamSenderTest(unittest.TestCase):
+    def test_resolve_backend_session_id_uses_existing_recording_session(self) -> None:
+        with patch(
+            "backend.scripts.local_audio_stream_sender.get_json",
+            return_value=[{"session_id": "lec_existing"}],
+        ):
+            session_id = resolve_backend_session_id(
+                requested_session_id="auto",
+                base_url="http://127.0.0.1:8000",
+                timeout=1.0,
+            )
+
+        self.assertEqual(session_id, "lec_existing")
+
+    def test_resolve_backend_session_id_creates_session_when_none_recording(self) -> None:
+        with patch(
+            "backend.scripts.local_audio_stream_sender.get_json",
+            return_value=[],
+        ), patch(
+            "backend.scripts.local_audio_stream_sender.post_json",
+            return_value={"session_id": "lec_created"},
+        ) as post_json_mock:
+            session_id = resolve_backend_session_id(
+                requested_session_id="",
+                base_url="http://127.0.0.1:8000",
+                timeout=1.0,
+            )
+
+        self.assertEqual(session_id, "lec_created")
+        self.assertEqual(post_json_mock.call_args.args[1], "/sessions/start")
+
     def test_chunk_ranges_and_segment_ids_are_stable(self) -> None:
         ranges = chunk_time_ranges(total_samples=37, chunk_samples=15, sample_rate=10)
 

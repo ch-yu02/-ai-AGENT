@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .documents import RagDocument
+from .llama_settings import configure_llamaindex_settings
 
 
 @dataclass(frozen=True)
@@ -86,6 +87,10 @@ class GlobalLlamaIndexService:
         self.index_root.mkdir(parents=True, exist_ok=True)
         manifest = self._manifest(records)
         index = self._load_or_rebuild_index(documents, manifest)
+        source_nodes = self._retrieve_source_nodes(index, query, limit=limit)
+        if source_nodes is not None:
+            return self._hits_from_source_nodes(source_nodes, limit=limit)
+
         query_engine = index.as_query_engine(similarity_top_k=limit)
         response = query_engine.query(query)
         return self._hits_from_response(response, limit=limit)
@@ -190,6 +195,7 @@ class GlobalLlamaIndexService:
         try:
             from llama_index.core import (
                 Document,
+                Settings,
                 StorageContext,
                 VectorStoreIndex,
                 load_index_from_storage,
@@ -200,6 +206,7 @@ class GlobalLlamaIndexService:
                 "or install optional LlamaIndex dependencies"
             ) from exc
 
+        configure_llamaindex_settings(Settings)
         return Document, VectorStoreIndex, StorageContext, load_index_from_storage
 
     def _hits_from_response(self, response: Any, *, limit: int) -> list[GlobalIndexHit]:
@@ -210,6 +217,34 @@ class GlobalLlamaIndexService:
         这里做宽容读取，并把缺失字段回退到稳定默认值。
         """
         source_nodes = getattr(response, "source_nodes", []) or []
+        return self._hits_from_source_nodes(source_nodes, limit=limit)
+
+    def _retrieve_source_nodes(
+        self,
+        index: Any,
+        query: str,
+        *,
+        limit: int,
+    ) -> list[Any] | None:
+        """Prefer vector retrieval over LlamaIndex's default query-engine LLM."""
+        as_retriever = getattr(index, "as_retriever", None)
+        if not callable(as_retriever):
+            return None
+
+        retriever = as_retriever(similarity_top_k=limit)
+        retrieve = getattr(retriever, "retrieve", None)
+        if not callable(retrieve):
+            return None
+
+        return list(retrieve(query) or [])
+
+    def _hits_from_source_nodes(
+        self,
+        source_nodes: list[Any],
+        *,
+        limit: int,
+    ) -> list[GlobalIndexHit]:
+        """从 LlamaIndex source nodes 恢复全局搜索命中。"""
         hits: list[GlobalIndexHit] = []
 
         for source_node in source_nodes[:limit]:

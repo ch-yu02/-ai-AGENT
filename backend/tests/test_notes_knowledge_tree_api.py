@@ -39,6 +39,8 @@ class FakeJsonLLMClient:
             ],
             "source_segment_ids": ["seg_001"],
             "importance": 0.8,
+            "session_title": "傅里叶变换与频域分析",
+            "course": "信号与系统",
         }
 
 
@@ -86,13 +88,23 @@ class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
                         "text": "傅里叶变换包含频域分析。",
                     }
                 ],
+                update_status="final",
             )
         )
 
         self.assertEqual(response.status, "applied")
         self.assertGreater(response.graph_patch_operations, 0)
+        self.assertTrue(response.session_metadata_updated)
+        self.assertEqual(response.session_title, "傅里叶变换与频域分析")
+        self.assertEqual(response.course, "信号与系统")
+        updated = session_manager.get_session(self.session_id)
+        self.assertEqual(updated.title, "傅里叶变换与频域分析")
+        self.assertEqual(updated.course, "信号与系统")
         graph = knowledge_graph_manager.get_graph(self.session_id)
         self.assertEqual({node.label for node in graph.nodes}, {"傅里叶变换", "频域"})
+        self.assertTrue(
+            any(item.get("type") == "session.updated" for item in self.socket.sent_payloads)
+        )
         self.assertEqual(graph.edges[0].relation, "contains")
 
         event_messages = [

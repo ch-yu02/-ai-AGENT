@@ -53,6 +53,10 @@ export type ClassroomAction =
       session: LectureSession;
     }
   | {
+      type: "session.updated";
+      session: LectureSession;
+    }
+  | {
       type: "websocket.statusChanged";
       status: WebSocketStatus;
     }
@@ -93,6 +97,12 @@ export function classroomReducer(
         ...state,
         session: action.session,
         websocketStatus: "disconnected",
+      };
+
+    case "session.updated":
+      return {
+        ...state,
+        session: action.session,
       };
 
     case "websocket.statusChanged":
@@ -171,12 +181,36 @@ function applyWebSocketMessage(
     return applySessionEndedMessage(state, message);
   }
 
+  if (message.type === "session.updated") {
+    return applySessionUpdatedMessage(state, message);
+  }
+
   if (message.type === "event.received") {
     return applyEventReceivedMessage(state, message);
   }
 
   // session.started 通常发生在前端连接 WebSocket 之前，当前 MVP 不依赖它。
   return state;
+}
+
+function applySessionUpdatedMessage(
+  state: ClassroomDashboardState,
+  message: WebSocketMessage,
+): ClassroomDashboardState {
+  const session = readObject(message.data.session);
+  if (!session || typeof session.session_id !== "string") {
+    return state;
+  }
+
+  return {
+    ...state,
+    session: state.session
+      ? {
+          ...state.session,
+          ...session,
+        }
+      : state.session,
+  };
 }
 
 function applySessionEndedMessage(

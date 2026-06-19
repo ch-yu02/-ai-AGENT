@@ -10,8 +10,12 @@ MVP 阶段引入向量库、本地 embedding 或云端模型。
 
 import re
 from dataclasses import dataclass
+from typing import Any, Mapping
 
 from .documents import RagDocument
+
+MAX_SOURCE_REF_COUNT = 3
+SOURCE_PREVIEW_CHARS = 240
 
 
 @dataclass(frozen=True)
@@ -70,7 +74,8 @@ class QueryService:
             document
             for _, document in sorted(scored, key=lambda item: item[0], reverse=True)
         ]
-        refs = [self._source_ref(document) for document in ranked[:limit]]
+        source_limit = _source_limit(limit)
+        refs = [self._source_ref(document) for document in ranked[:source_limit]]
 
         if not refs:
             # 找不到来源时明确返回“没有依据”，而不是编造答案。这是课堂 Agent
@@ -97,7 +102,7 @@ class QueryService:
             type=str(source_type),
             id=source_id,
             ts=ts if isinstance(ts, int | float) else None,
-            text=document.text,
+            text=compact_source_ref_text(document.text, metadata=document.metadata),
         )
 
     def _keywords(self, prompt: str) -> list[str]:
@@ -142,4 +147,33 @@ class QueryService:
         return sum(len(keyword) for keyword in keywords if keyword in normalized)
 
 
-__all__ = ["QueryResult", "QueryService", "RagSourceRef"]
+def compact_source_ref_text(
+    text: str,
+    *,
+    metadata: Mapping[str, Any] | None = None,
+    max_chars: int = SOURCE_PREVIEW_CHARS,
+) -> str:
+    """生成适合 Agent 来源区展示的短摘录。
+
+    RAG 文档正文可能是整份结构化笔记或长段 OCR。检索可以使用长文本，但
+    ``source_refs`` 只应该承载可读、可追溯的短来源，避免前端把整份字幕展开。
+    """
+    display_text = metadata.get("display_text") if metadata else None
+    candidate = display_text if isinstance(display_text, str) and display_text.strip() else text
+    normalized = re.sub(r"\s+", " ", candidate).strip()
+    if len(normalized) <= max_chars:
+        return normalized
+    return normalized[:max_chars].rstrip() + "..."
+
+
+def _source_limit(limit: int) -> int:
+    return min(max(1, limit), MAX_SOURCE_REF_COUNT)
+
+
+__all__ = [
+    "MAX_SOURCE_REF_COUNT",
+    "QueryResult",
+    "QueryService",
+    "RagSourceRef",
+    "compact_source_ref_text",
+]

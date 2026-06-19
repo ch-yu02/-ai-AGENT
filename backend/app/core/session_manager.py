@@ -122,6 +122,20 @@ class SessionManager:
             raise SessionNotFoundError(f"Session not found: {session_id}")
         return session
 
+    def update_session_metadata(
+        self,
+        session_id: str,
+        updates: dict[str, object],
+    ) -> LectureSession:
+        """Update mutable session metadata for recording or ended sessions."""
+        session = self.get_session(session_id)
+        if not updates:
+            return session
+
+        updated_session = session.model_copy(update=updates)
+        self._sessions[session_id] = updated_session
+        return updated_session
+
     # ── 状态转换 ─────────────────────────────────────────────
 
     def end_session(self, session_id: str) -> LectureSession:

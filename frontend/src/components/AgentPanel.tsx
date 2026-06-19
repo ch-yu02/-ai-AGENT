@@ -43,6 +43,9 @@ const intentLabels: Record<string, string> = {
   quiz: "自测",
 };
 
+const maxVisibleSourceRefs = 3;
+const sourcePreviewChars = 180;
+
 export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps) {
   // prompt 是输入框草稿；messages 是本面板的轻量聊天记录。它们不进入全局
   // classroomReducer，因为 Agent 对话不参与实时事件合并。
@@ -307,19 +310,33 @@ function numberValue(value: unknown, fallback: number): number {
 function SourceRefs({ refs }: { refs: AgentSourceRef[] }) {
   // 来源列表目前只展示类型、时间和文本；不拼后端文件路径，避免前端绕过 API
   // 直接依赖 data/sessions 的本地存储结构。
+  const visibleRefs = refs.slice(0, maxVisibleSourceRefs);
+  const hiddenCount = refs.length - visibleRefs.length;
+
   return (
     <div className="agent-source-list">
-      {refs.map((ref) => (
+      {visibleRefs.map((ref) => (
         <div className="agent-source" key={`${ref.type}-${ref.id}`}>
           <span>
             {ref.type}
             {typeof ref.ts === "number" ? ` · ${formatClassTime(ref.ts)}` : ""}
           </span>
-          <p>{ref.text}</p>
+          <p>{compactSourceText(ref.text ?? "")}</p>
         </div>
       ))}
+      {hiddenCount > 0 ? (
+        <div className="agent-source-more">还有 {hiddenCount} 条来源已折叠</div>
+      ) : null}
     </div>
   );
+}
+
+function compactSourceText(text: string): string {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= sourcePreviewChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, sourcePreviewChars).trimEnd()}...`;
 }
 
 function formatAgentError(error: unknown): string {

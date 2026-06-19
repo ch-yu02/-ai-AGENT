@@ -135,6 +135,24 @@ class LocalStorageTest(unittest.TestCase):
         self.assertTrue(self.storage.session_exists(self.session_id))
         self.assertEqual(metadata["title"], "通信原理第8讲")
 
+    def test_update_session_metadata_rewrites_saved_metadata(self) -> None:
+        self.storage.save_session(
+            session=self._session(),
+            context=self._context(),
+            knowledge_graph=self._knowledge_graph(),
+        )
+
+        updated = self.storage.update_session_metadata(
+            self.session_id,
+            {"title": "傅里叶变换专题", "course": "信号与系统"},
+        )
+        metadata = self.storage.read_metadata(self.session_id)
+
+        self.assertEqual(updated.title, "傅里叶变换专题")
+        self.assertEqual(updated.course, "信号与系统")
+        self.assertEqual(metadata["title"], "傅里叶变换专题")
+        self.assertEqual(metadata["course"], "信号与系统")
+
     def test_session_index_dir_stays_inside_session_directory(self) -> None:
         index_dir = self.storage.session_index_dir(self.session_id)
 

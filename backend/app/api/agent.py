@@ -18,6 +18,8 @@ from backend.app.agent import (
     AgentChatRequest,
     AgentChatResponse,
     AgentSessionNotFoundError,
+    CourseKnowledgeTreeResponse,
+    CourseListResponse,
     GlobalSearchRequest,
     GlobalSearchResponse,
     NotesKnowledgeTreeUpdateRequest,
@@ -72,6 +74,24 @@ async def search(request: GlobalSearchRequest) -> GlobalSearchResponse:
     ``data/sessions/{session_id}`` 中稳定存在的课后档案。
     """
     return global_search_service.search(request)
+
+
+@router.post("/review", response_model=GlobalSearchResponse)
+async def review(request: GlobalSearchRequest) -> GlobalSearchResponse:
+    """跨历史课堂做来源约束的课后复习问答。"""
+    return global_search_service.review(request)
+
+
+@router.get("/courses", response_model=CourseListResponse)
+async def list_courses() -> CourseListResponse:
+    """按课程聚合已保存历史课堂，供课后复习入口使用。"""
+    return global_search_service.list_courses()
+
+
+@router.get("/courses/{course}/knowledge-tree", response_model=CourseKnowledgeTreeResponse)
+async def merged_course_tree(course: str) -> CourseKnowledgeTreeResponse:
+    """合并同一课程多节历史课堂的知识树快照。"""
+    return global_search_service.merged_course_tree(course)
 
 
 @router.post(
@@ -147,17 +167,26 @@ async def update_knowledge_tree_from_notes(
                 request.session_id,
                 result.markdown_hash,
             )
+        metadata_updated = await _update_session_metadata_from_notes(
+            request=request,
+            session_title=result.session_title,
+            course=result.course,
+        )
         elapsed = time.monotonic() - started_at
         _notes_agent_log(
             "skipped "
             f"session={request.session_id} snapshot={request.snapshot_id} "
-            f"elapsed={elapsed:.2f}s warnings={list(result.warnings)}"
+            f"elapsed={elapsed:.2f}s metadata_updated={metadata_updated} "
+            f"warnings={list(result.warnings)}"
         )
         return NotesKnowledgeTreeUpdateResponse(
             status="skipped",
             session_id=request.session_id,
             snapshot_id=request.snapshot_id,
             markdown_hash=result.markdown_hash,
+            session_title=result.session_title,
+            course=result.course,
+            session_metadata_updated=metadata_updated,
             warnings=list(result.warnings),
         )
 
@@ -186,11 +215,17 @@ async def update_knowledge_tree_from_notes(
         graph_patch=graph_patch,
     )
     operation_count = len(graph_patch.operations) if graph_patch else 0
+    metadata_updated = await _update_session_metadata_from_notes(
+        request=request,
+        session_title=result.session_title,
+        course=result.course,
+    )
     elapsed = time.monotonic() - started_at
     _notes_agent_log(
         f"{'applied' if operation_count else 'skipped'} "
         f"session={request.session_id} snapshot={request.snapshot_id} "
         f"elapsed={elapsed:.2f}s ops={operation_count} "
+        f"metadata_updated={metadata_updated} "
         f"extraction={result.extraction.extraction_id} warnings={list(result.warnings)}"
     )
     return NotesKnowledgeTreeUpdateResponse(
@@ -200,8 +235,48 @@ async def update_knowledge_tree_from_notes(
         markdown_hash=result.markdown_hash,
         extraction_id=result.extraction.extraction_id,
         graph_patch_operations=operation_count,
+        session_title=result.session_title,
+        course=result.course,
+        session_metadata_updated=metadata_updated,
         warnings=list(result.warnings),
     )
+
+
+async def _update_session_metadata_from_notes(
+    *,
+    request: NotesKnowledgeTreeUpdateRequest,
+    session_title: str | None,
+    course: str | None,
+) -> bool:
+    """Update classroom metadata from the final cloud notes response."""
+    if request.update_status != "final":
+        return False
+
+    updates: dict[str, object] = {}
+    if session_title:
+        updates["title"] = session_title[:80]
+    if course:
+        updates["course"] = course[:80]
+    if not updates:
+        return False
+
+    try:
+        updated_session = session_manager.update_session_metadata(
+            request.session_id,
+            updates,
+        )
+    except SessionNotFoundError:
+        return False
+
+    await websocket_manager.broadcast(
+        request.session_id,
+        WebSocketMessage(
+            type="session.updated",
+            session_id=request.session_id,
+            data={"session": updated_session.model_dump()},
+        ),
+    )
+    return True
 
 
 async def _broadcast_notes_knowledge_update(
