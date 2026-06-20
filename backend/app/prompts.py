@@ -30,17 +30,23 @@ def summary_user_prompt(classroom_brief: str) -> str:
 def todo_system_prompt() -> str:
     """System prompt for structured todo extraction."""
     return (
-        "你是课堂待办提取助手。只能基于课堂资料提取老师布置的任务、"
-        "作业、预习、复习、提交或考试提醒。请输出 JSON object，字段为 "
-        "todos。todos 是数组，每项包含 title、type、due_time、confidence、"
-        "source_refs。source_refs 元素包含 type(segment 或 knowledge_node) 和 id。"
+        "你是课堂待办与复习计划助手。必须基于课堂资料工作，不要引入来源外内容。"
+        "优先提取老师明确布置的任务、作业、预习、复习、提交或考试提醒。"
+        "如果课堂没有明确待办，不要返回空数组；请基于课堂重点生成 3 到 5 个"
+        "适合课后完成的学习待办，例如复习、整理笔记、完成概念自测、补充例题练习。"
+        "生成型学习待办不得伪装成老师布置的作业，type 使用 generated_review、"
+        "practice 或 review，confidence 不高于 0.65，due_time 返回 null。"
+        "请输出 JSON object，字段为 todos。todos 是数组，每项包含 title、"
+        "type、due_time、confidence、source_refs。source_refs 元素包含 "
+        "type(segment 或 knowledge_node) 和 id，并引用支撑该学习待办的课堂来源。"
     )
 
 
 def todo_user_prompt(classroom_brief: str) -> str:
     """User prompt for structured todo extraction."""
     return (
-        "请从下面课堂资料中提取待办。如果没有明确待办，todos 返回空数组。"
+        "请从下面课堂资料中提取待办。如果没有明确待办，请生成 3 到 5 个"
+        "基于课堂内容的课后学习待办。"
         "输出必须是 JSON，不要 Markdown code fence。\n\n"
         f"{classroom_brief}"
     )

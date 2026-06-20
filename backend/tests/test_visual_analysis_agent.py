@@ -1,7 +1,10 @@
 import unittest
+from unittest.mock import patch
 
+from backend.app.agent import visual_analysis
 from backend.app.agent.schemas import VisualAnalysisRequest
 from backend.app.agent.visual_analysis import ClassroomVisualAnalysisAgent
+from backend.app.llm import CloudLLMError, LLMSettings
 from backend.app.models import ClassroomContext, ImageCapture, KnowledgeTree, TranscriptSegment
 
 
@@ -51,6 +54,42 @@ class FakeMultimodalClient:
                     "target": "端系统",
                     "relation": "mentions",
                 },
+            ],
+            "importance": 0.9,
+        }
+
+
+class FailingMultimodalClient:
+    def complete_json_with_image(self, *args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        raise CloudLLMError("The read operation timed out")
+
+
+class RecordingCloudClient:
+    timeouts: list[float] = []
+    calls = 0
+
+    def __init__(self, settings: LLMSettings) -> None:
+        self.settings = settings
+        self.__class__.timeouts.append(settings.timeout_seconds)
+
+    def complete_json_with_image(self, *args, **kwargs) -> dict[str, object]:  # type: ignore[no-untyped-def]
+        self.__class__.calls += 1
+        if self.__class__.calls == 1:
+            raise CloudLLMError("The read operation timed out")
+        return {
+            "caption": "板书展示了分组交换与端系统之间的关系。",
+            "visual_text": ["分组交换", "端系统"],
+            "key_points": ["分组交换把数据拆成多个包传输。"],
+            "entities": [
+                {"name": "分组交换", "type": "concept"},
+                {"name": "端系统", "type": "concept"},
+            ],
+            "relations": [
+                {
+                    "source": "分组交换",
+                    "target": "端系统",
+                    "relation": "serves",
+                }
             ],
             "importance": 0.9,
         }
@@ -135,6 +174,64 @@ class VisualAnalysisAgentTest(unittest.TestCase):
 
         self.assertTrue(second.skipped)
         self.assertEqual(len(self.client.calls), 1)
+
+    def test_failed_analysis_keeps_error_message_in_visual_caption(self) -> None:
+        agent = ClassroomVisualAnalysisAgent(FailingMultimodalClient())
+
+        result = agent.analyze(
+            VisualAnalysisRequest(session_id=self.session_id, image_id=self.image_id),
+            context=self.context,
+            knowledge_graph=KnowledgeTree(session_id=self.session_id),
+            image_bytes=b"fake-jpeg",
+            media_type="image/jpeg",
+        )
+
+        self.assertTrue(result.failed)
+        self.assertIsNotNone(result.visual)
+        self.assertEqual(result.visual.status, "failed")
+        self.assertIn("The read operation timed out", result.visual.caption or "")
+        self.assertEqual(result.visual.caption, result.warnings[0])
+
+    def test_timeout_increases_after_failed_image_analysis(self) -> None:
+        RecordingCloudClient.timeouts = []
+        RecordingCloudClient.calls = 0
+        settings = LLMSettings(
+            provider="kimi",
+            api_key="fake",
+            model="kimi-vision",
+            base_url="https://api.moonshot.cn/v1",
+            timeout_seconds=40,
+            max_retries=0,
+        )
+        agent = ClassroomVisualAnalysisAgent()
+
+        with patch.object(visual_analysis, "load_llm_settings", return_value=settings), patch.object(
+            visual_analysis,
+            "CloudLLMClient",
+            RecordingCloudClient,
+        ):
+            first = agent.analyze(
+                VisualAnalysisRequest(session_id=self.session_id, image_id=self.image_id),
+                context=self.context,
+                knowledge_graph=KnowledgeTree(session_id=self.session_id),
+                image_bytes=b"fake-jpeg",
+                media_type="image/jpeg",
+            )
+            second = agent.analyze(
+                VisualAnalysisRequest(
+                    session_id=self.session_id,
+                    image_id=self.image_id,
+                    force=True,
+                ),
+                context=self.context,
+                knowledge_graph=KnowledgeTree(session_id=self.session_id),
+                image_bytes=b"fake-jpeg",
+                media_type="image/jpeg",
+            )
+
+        self.assertTrue(first.failed)
+        self.assertFalse(second.failed)
+        self.assertEqual(RecordingCloudClient.timeouts, [40, 72.0])
 
 
 if __name__ == "__main__":

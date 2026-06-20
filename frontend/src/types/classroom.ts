@@ -21,6 +21,8 @@ export type LectureSession = {
 // WebSocket 连接状态只描述前端连接生命周期，不等同于课堂 session.status。
 export type WebSocketStatus = "disconnected" | "connecting" | "connected" | "error";
 
+export type PostClassStatus = "idle" | "generating" | "ready" | "failed";
+
 // ASR 字幕片段，对应 event_type = "transcript.segment"。
 export type TranscriptSegment = {
   segment_id: string;
@@ -198,7 +200,9 @@ export type WebSocketMessage = {
     | "ws.connected"
     | "session.started"
     | "session.updated"
+    | "transcript.preview"
     | "event.received"
+    | "post_class.updated"
     | "session.ended";
   session_id: string;
   data: Record<string, unknown>;
@@ -212,8 +216,10 @@ export type ClassroomDashboardState = {
   websocketStatus: WebSocketStatus;
   eventCount: number;
   transcript: TranscriptSegment[];
+  partialTranscript: TranscriptSegment | null;
   timeline: TimelineItem[];
   visuals: ImageCapture[];
   graph: KnowledgeGraphView;
+  postClassStatus: PostClassStatus;
   postClassArtifacts: SessionPostClassArtifacts;
 };

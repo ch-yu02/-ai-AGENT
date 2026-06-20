@@ -107,6 +107,41 @@ class GlobalLlamaIndexServiceTest(unittest.TestCase):
             self.assertEqual(hits[0].source_id, "seg_001")
             self.assertGreater(hits[0].score, 1)
 
+    def test_build_index_compacts_long_metadata_before_llamaindex(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            service = GlobalLlamaIndexService(
+                index_root=Path(temp_dir),
+                document_factory=FakeLlamaDocument,
+                index_factory=FakeRetrieverVectorStoreIndex,
+                storage_context_factory=FakeStorageContext,
+                load_index_func=fake_load_index_from_storage,
+            )
+            long_metadata = {
+                "session_id": "lec_global_vector",
+                "title": "通信原理第9讲",
+                "course": "通信原理",
+                "type": "structured_note",
+                "source_id": "structured_notes",
+                "display_text": "很长的课堂笔记" * 600,
+                "irrelevant_blob": "x" * 6000,
+            }
+
+            index = service._build_index(
+                [
+                    RagDocument(
+                        text="信道编码用于提高通信可靠性。",
+                        metadata=long_metadata,
+                    )
+                ]
+            )
+
+            metadata = index.documents[0].metadata
+            self.assertEqual(metadata["session_id"], "lec_global_vector")
+            self.assertEqual(metadata["source_id"], "structured_notes")
+            self.assertLessEqual(len(metadata["display_text"]), 240)
+            self.assertTrue(metadata["display_text"].startswith("很长的课堂笔记"))
+            self.assertNotIn("irrelevant_blob", metadata)
+
 
 if __name__ == "__main__":
     unittest.main()

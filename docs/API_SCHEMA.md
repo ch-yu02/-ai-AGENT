@@ -265,13 +265,13 @@ Content-Type: application/json
 
 1. 读取课堂上下文。
 2. 读取知识图谱。
-3. 结束前运行一次内部 LLM 知识抽取；失败只进入 warning/error，不阻塞保存。
-4. 将 session 状态改为 `ended`。
-5. 保存本地文件，包括 `structured_notes.md`（如果录制中收到过结构化笔记）。
-6. 生成并保存课后产物 `summary.md`、`todos.json`。
-7. 如果启用 LlamaIndex，构建单节课 RAG 索引。
-8. 通过 WebSocket 广播 `session.ended`，其中包含保存路径、课后产物路径、
-   RAG 索引状态和知识抽取结果摘要。
+3. 将 session 状态改为 `ended`。
+4. 先保存核心本地文件，包括 `structured_notes.md`（如果录制中收到过结构化笔记）。
+5. 通过 WebSocket 广播 `session.ended`，其中包含保存路径和 `post_class_status: "generating"`。
+6. 立刻返回结束后的 `LectureSession`，不等待 summary / todos / RAG 索引。
+7. 后台任务运行最终内部 LLM 知识抽取、生成 `summary.md` / `todos.json`，
+   并在启用 LlamaIndex 时构建单节课 RAG 索引。
+8. 后台任务完成后广播 `post_class.updated`，前端再切换课后产物状态。
 
 响应状态码：`200 OK`
 
@@ -703,7 +703,10 @@ GET /sessions/{session_id}/images/{image_id}
 4. 若需要跳过 OCR 并直接让云端多模态模型读图，调用
    `POST /agent/visual/analyze`。成功后后端会更新同一个 `image.capture`，
    并把图片中的知识点作为 `knowledge.extraction` 推送给图谱。
-5. Agent/RAG 检索会把视觉来源作为短 source ref 返回；前端可展示真实图片、
+5. 录制中的前端若遇到多模态分析失败，会短延迟自动重试，并在重试请求中
+   使用 `force=true`；后端会根据同一张图片此前失败次数适度放宽本次云端
+   LLM timeout。课堂结束或切换 session 后不会继续重试。
+6. Agent/RAG 检索会把视觉来源作为短 source ref 返回；前端可展示真实图片、
    OCR/caption、`visual_text` 和 `key_points`。
 
 ### 6.2.2 多模态图片分析
@@ -1004,6 +1007,40 @@ LLM_MAX_RETRIES
         "timeline": "data/sessions/lec_20260605_010203_ab12cd34/timeline.json",
         "knowledge_graph": "data/sessions/lec_20260605_010203_ab12cd34/knowledge_graph.json"
       },
+      "post_class_files": {},
+      "rag_index": {
+        "enabled": false,
+        "status": "pending"
+      },
+      "knowledge_extraction": {
+        "session_id": "lec_20260605_010203_ab12cd34",
+        "status": "pending"
+      },
+      "post_class_status": "generating"
+    }
+  },
+  "created_at": "2026-06-05T01:02:03.000000+00:00"
+}
+```
+
+### post_class.updated
+
+`POST /sessions/{session_id}/end` 返回后，后端后台任务生成课后产物、最终知识抽取和可选 RAG 索引。完成或失败时广播：
+
+```json
+{
+  "type": "post_class.updated",
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "data": {
+    "status": "ready",
+    "post_class_artifacts": {
+      "summary_markdown": "本节课主要讲解……",
+      "todos": [],
+      "quiz": [],
+      "agent_artifacts": [],
+      "agent_messages": []
+    },
+    "storage": {
       "post_class_files": {
         "summary": "data/sessions/lec_20260605_010203_ab12cd34/summary.md",
         "todos": "data/sessions/lec_20260605_010203_ab12cd34/todos.json"
@@ -1019,11 +1056,14 @@ LLM_MAX_RETRIES
         "processed_source_ids": ["seg_001", "seg_002"],
         "errors": []
       }
-    }
+    },
+    "warnings": []
   },
-  "created_at": "2026-06-05T01:02:03.000000+00:00"
+  "created_at": "2026-06-05T01:02:06.000000+00:00"
 }
 ```
+
+失败时 `data.status` 为 `"failed"`，`warnings` 会包含失败原因；课堂核心文件已经在 `session.ended` 前保存。
 
 ## 8. 知识图谱数据
 
@@ -1100,8 +1140,8 @@ data/sessions/{session_id}/agent_artifacts.json
 | `structured_notes.md` | WhisperLive/Qwen 链路实时维护的结构化课堂笔记，可能不存在 |
 | `timeline.json` | `TimelineItem[]` |
 | `knowledge_graph.json` | `KnowledgeTree` |
-| `summary.md` | 课后总结，结束课堂时自动生成 |
-| `todos.json` | 课后待办候选，结束课堂时自动生成 |
+| `summary.md` | 课后总结，结束课堂后由后台任务生成 |
+| `todos.json` | 课后待办候选，结束课堂后由后台任务生成 |
 | `quiz.json` | 用户主动通过 Agent 生成自测题后保存 |
 | `agent_messages.json` | 历史 Agent 对话 |
 | `agent_artifacts.json` | Agent 生成的结构化产物快照 |
@@ -1199,6 +1239,49 @@ scripts/dev.sh whisperlive-md \
    更新知识图谱。
 6. final 快照如果返回 `session_title` / `course`，后端会更新课堂元信息并
    广播 `session.updated`。
+
+### whisperlive-mic
+
+`whisperlive-mic` 是真实麦克风采集入口，参考桌面采集项目的 ALSA/ffmpeg
+方式自动选择 USB 麦克风，并把 16 kHz mono float32 PCM 直接送入
+WhisperLive：
+
+```bash
+scripts/dev.sh whisperlive-server --port 9090
+scripts/dev.sh whisperlive-mic --enable-cloud-graph
+```
+
+指定设备或只测试 ASR 字幕：
+
+```bash
+scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language '<|zh|>'
+scripts/dev.sh whisperlive-mic --no-qwen-notes --max-audio-seconds 60
+```
+
+行为：
+
+1. 通过 `arecord -l` 自动选择 USB/mic 类 ALSA 输入设备；也可用
+   `--audio-device` 显式指定。
+2. 用 ffmpeg 从麦克风读取音频并重采样为 WhisperLive 需要的 16 kHz mono
+   float32 PCM。
+3. WhisperLive 返回 completed 字幕后，脚本发送标准
+   `transcript.segment` 到 `/events`。
+4. WhisperLive partial 字幕会通过 `POST /events/transcript-preview` 广播给
+   前端作为一条可替换的“正在识别”临时字幕；该通道不写入 transcript、
+   timeline、笔记、知识图谱或历史文件。
+5. 默认会自动接入最新 recording 课堂；没有可用课堂时会创建本地测试课堂。
+6. 未传 `--no-qwen-notes` 时，仍会定期维护
+   `data/sessions/{session_id}/structured_notes.md`。
+7. 传 `--enable-cloud-graph` 时，结构化笔记继续上传给 notes-agent 更新图谱。
+
+调低体感字幕延迟时可先调整：
+
+```bash
+scripts/dev.sh whisperlive-mic \
+  --no-qwen-notes \
+  --partial-preview-interval 0.5 \
+  --same-output-threshold 2
+```
 
 ## 12. 前端接入建议
 

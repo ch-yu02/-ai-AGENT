@@ -173,6 +173,39 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
             [],
         )
 
+    async def test_transcript_preview_broadcasts_without_mutating_context(self) -> None:
+        """Partial subtitles should be visible but never persisted."""
+        response = await events_api.receive_transcript_preview(
+            events_api.TranscriptPreviewRequest(
+                session_id=self.session_id,
+                payload={
+                    "segment_id": "seg_partial_001",
+                    "start_ts": 1.0,
+                    "end_ts": 2.0,
+                    "text": "正在识别的临时字幕",
+                    "source": "whisperlive_openvino",
+                },
+            )
+        )
+
+        self.assertEqual(response.event_type, "transcript.preview")
+        self.assertEqual(response.event_count, 0)
+        context = context_manager.get_context(self.session_id)
+        self.assertEqual(context.transcript, [])
+        self.assertEqual(context.timeline, [])
+
+        preview_messages = [
+            payload
+            for payload in self.socket.sent_payloads
+            if payload["type"] == "transcript.preview"
+        ]
+        self.assertEqual(len(preview_messages), 1)
+        self.assertEqual(
+            preview_messages[0]["data"]["payload"]["text"],
+            "正在识别的临时字幕",
+        )
+        self.assertFalse(preview_messages[0]["data"]["payload"]["is_final"])
+
 
 if __name__ == "__main__":
     unittest.main()

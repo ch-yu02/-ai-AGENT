@@ -25,17 +25,6 @@ type AgentPanelProps = {
   persistedMessages?: Array<Record<string, unknown>>;
 };
 
-// 快捷按钮使用显式 mode，绕过后端关键词路由。这样即使提示词文案以后调整，
-// 点击“总结重点”仍会稳定执行 summary 技能。
-//
-// 特别注意“生成自测”：quiz 不在结束课堂时自动生成。用户点击这个按钮后，
-// 后端 Agent 才会运行 quiz 技能，并在历史课堂目录存在时保存 quiz.json。
-const quickPrompts: Array<{ label: string; prompt: string; mode: AgentIntent }> = [
-  { label: "总结重点", prompt: "总结这节课的重点", mode: "summary" },
-  { label: "提取待办", prompt: "老师布置了什么作业或待办？", mode: "todos" },
-  { label: "生成自测", prompt: "根据这节课出几道自测题", mode: "quiz" },
-];
-
 const intentLabels: Record<string, string> = {
   qa: "问答",
   summary: "总结",
@@ -116,20 +105,6 @@ export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps)
       </div>
 
       <div className="agent-body">
-        <div className="agent-quick-row">
-          {quickPrompts.map((item) => (
-            <button
-              className="icon-text-button"
-              disabled={!session || isLoading}
-              key={item.mode}
-              onClick={() => void submitAgentPrompt(item.prompt, item.mode)}
-              type="button"
-            >
-              {item.label}
-            </button>
-          ))}
-        </div>
-
         <label className="agent-mode-toggle">
           <input
             checked={answerMode === "grounded"}
@@ -143,8 +118,8 @@ export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps)
         </label>
 
         <div className="agent-messages" aria-live="polite">
-          {/* aria-live 让辅助技术能感知新回答。这里不用复杂 Markdown 渲染，
-              第一版 answer 只按纯文本和换行展示。 */}
+          {/* aria-live 让辅助技术能感知新回答。Markdown 只走受控 React 节点，
+              不把模型输出作为 HTML 注入页面。 */}
           {messages.length === 0 ? (
             <div className="agent-empty">选择课堂后即可提问</div>
           ) : (
@@ -154,7 +129,7 @@ export function AgentPanel({ session, persistedMessages = [] }: AgentPanelProps)
                   <strong>{message.role === "user" ? "你" : "Agent"}</strong>
                   {message.intent ? <span>{intentLabels[message.intent]}</span> : null}
                 </div>
-                <p>{message.content}</p>
+                <MarkdownContent content={message.content} />
                 {/* artifacts 是结构化结果，例如 todos/quiz。第一版用折叠详情
                     保持紧凑展示，后续可替换为专门的卡片/列表组件。 */}
                 {message.artifacts?.length ? (
@@ -228,6 +203,304 @@ function normalizeAgentMessage(message: Record<string, unknown>): AgentMessage {
       ? message.warnings.map(String)
       : undefined,
   };
+}
+
+type MarkdownInlineNode =
+  | {
+      type: "text";
+      text: string;
+    }
+  | {
+      type: "strong";
+      text: string;
+    }
+  | {
+      type: "code";
+      text: string;
+    };
+
+type MarkdownBlock =
+  | {
+      type: "heading";
+      level: 3 | 4 | 5;
+      text: string;
+    }
+  | {
+      type: "paragraph";
+      text: string;
+    }
+  | {
+      type: "unordered-list" | "ordered-list";
+      items: string[];
+    }
+  | {
+      type: "quote";
+      text: string;
+    }
+  | {
+      type: "code";
+      text: string;
+      language?: string;
+    };
+
+function MarkdownContent({ content }: { content: string }) {
+  const blocks = parseMarkdownBlocks(content);
+  if (blocks.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="agent-markdown">
+      {blocks.map((block, index) => (
+        <MarkdownBlockView block={block} key={index} />
+      ))}
+    </div>
+  );
+}
+
+function MarkdownBlockView({ block }: { block: MarkdownBlock }) {
+  if (block.type === "heading") {
+    const HeadingTag = `h${block.level}` as "h3" | "h4" | "h5";
+    return (
+      <HeadingTag>
+        <MarkdownInline content={block.text} />
+      </HeadingTag>
+    );
+  }
+
+  if (block.type === "paragraph") {
+    return (
+      <p>
+        <MarkdownInline content={block.text} />
+      </p>
+    );
+  }
+
+  if (block.type === "unordered-list") {
+    return (
+      <ul>
+        {block.items.map((item, index) => (
+          <li key={index}>
+            <MarkdownInline content={item} />
+          </li>
+        ))}
+      </ul>
+    );
+  }
+
+  if (block.type === "ordered-list") {
+    return (
+      <ol>
+        {block.items.map((item, index) => (
+          <li key={index}>
+            <MarkdownInline content={item} />
+          </li>
+        ))}
+      </ol>
+    );
+  }
+
+  if (block.type === "quote") {
+    return (
+      <blockquote>
+        <MarkdownInline content={block.text} />
+      </blockquote>
+    );
+  }
+
+  if (block.type === "code") {
+    return (
+      <pre>
+        <code>{block.text}</code>
+      </pre>
+    );
+  }
+
+  return null;
+}
+
+function MarkdownInline({ content }: { content: string }) {
+  const nodes = parseMarkdownInline(content);
+  return (
+    <>
+      {nodes.map((node, index) => {
+        if (node.type === "strong") {
+          return <strong key={index}>{renderInlineText(node.text, index)}</strong>;
+        }
+        if (node.type === "code") {
+          return <code key={index}>{node.text}</code>;
+        }
+        return <span key={index}>{renderInlineText(node.text, index)}</span>;
+      })}
+    </>
+  );
+}
+
+function renderInlineText(text: string, keyPrefix: number) {
+  const parts = text.split("\n");
+  if (parts.length === 1) {
+    return text;
+  }
+
+  return parts.flatMap((part, index) =>
+    index === 0
+      ? [part]
+      : [<br key={`${keyPrefix}-${index}`} />, part],
+  );
+}
+
+function parseMarkdownBlocks(content: string): MarkdownBlock[] {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const blocks: MarkdownBlock[] = [];
+  let paragraph: string[] = [];
+  let listType: "unordered-list" | "ordered-list" | null = null;
+  let listItems: string[] = [];
+  let codeLanguage: string | undefined;
+  let codeLines: string[] | null = null;
+
+  const flushParagraph = () => {
+    const text = paragraph.join("\n").trim();
+    if (text) {
+      blocks.push({ type: "paragraph", text });
+    }
+    paragraph = [];
+  };
+  const flushList = () => {
+    if (listType && listItems.length) {
+      blocks.push({ type: listType, items: listItems });
+    }
+    listType = null;
+    listItems = [];
+  };
+  const flushOpenTextBlocks = () => {
+    flushParagraph();
+    flushList();
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const fenceMatch = line.match(/^```([A-Za-z0-9_-]+)?\s*$/);
+    if (fenceMatch) {
+      if (codeLines) {
+        blocks.push({
+          type: "code",
+          text: codeLines.join("\n"),
+          language: codeLanguage,
+        });
+        codeLines = null;
+        codeLanguage = undefined;
+      } else {
+        flushOpenTextBlocks();
+        codeLines = [];
+        codeLanguage = fenceMatch[1];
+      }
+      continue;
+    }
+
+    if (codeLines) {
+      codeLines.push(rawLine);
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushOpenTextBlocks();
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,3})\s+(.+)$/);
+    if (headingMatch) {
+      flushOpenTextBlocks();
+      blocks.push({
+        type: "heading",
+        level: (headingMatch[1].length + 2) as 3 | 4 | 5,
+        text: headingMatch[2].trim(),
+      });
+      continue;
+    }
+
+    const unorderedMatch = line.match(/^[-*]\s+(.+)$/);
+    if (unorderedMatch) {
+      flushParagraph();
+      if (listType !== "unordered-list") {
+        flushList();
+        listType = "unordered-list";
+      }
+      listItems.push(unorderedMatch[1].trim());
+      continue;
+    }
+
+    const orderedMatch = line.match(/^\d+[.)]\s+(.+)$/);
+    if (orderedMatch) {
+      flushParagraph();
+      if (listType !== "ordered-list") {
+        flushList();
+        listType = "ordered-list";
+      }
+      listItems.push(orderedMatch[1].trim());
+      continue;
+    }
+
+    const quoteMatch = line.match(/^>\s?(.+)$/);
+    if (quoteMatch) {
+      flushOpenTextBlocks();
+      blocks.push({
+        type: "quote",
+        text: quoteMatch[1].trim(),
+      });
+      continue;
+    }
+
+    flushList();
+    paragraph.push(line);
+  }
+
+  if (codeLines) {
+    blocks.push({
+      type: "code",
+      text: codeLines.join("\n"),
+      language: codeLanguage,
+    });
+  }
+  flushOpenTextBlocks();
+
+  return blocks;
+}
+
+function parseMarkdownInline(content: string): MarkdownInlineNode[] {
+  const nodes: MarkdownInlineNode[] = [];
+  const pattern = /(`[^`\n]+`|\*\*[^*\n]+\*\*)/g;
+  let lastIndex = 0;
+  for (const match of content.matchAll(pattern)) {
+    if (match.index > lastIndex) {
+      nodes.push({
+        type: "text",
+        text: content.slice(lastIndex, match.index),
+      });
+    }
+
+    const token = match[0];
+    if (token.startsWith("`")) {
+      nodes.push({
+        type: "code",
+        text: token.slice(1, -1),
+      });
+    } else {
+      nodes.push({
+        type: "strong",
+        text: token.slice(2, -2),
+      });
+    }
+    lastIndex = match.index + token.length;
+  }
+
+  if (lastIndex < content.length) {
+    nodes.push({
+      type: "text",
+      text: content.slice(lastIndex),
+    });
+  }
+
+  return nodes;
 }
 
 function ArtifactView({ artifact }: { artifact: AgentArtifact }) {

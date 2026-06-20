@@ -22,6 +22,7 @@ from .query_service import (
     RagSourceRef,
     compact_source_ref_text,
 )
+from .llama_metadata import compact_llama_metadata
 from .llama_settings import configure_llamaindex_settings
 
 
@@ -233,7 +234,7 @@ class LlamaIndexQueryService:
         """把内部 RagDocument 转成 LlamaIndex Document。"""
         return document_factory(
             text=document.text,
-            metadata=document.metadata,
+            metadata=compact_llama_metadata(document.metadata),
         )
 
     def _source_refs_from_response(

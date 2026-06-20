@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .documents import RagDocument
+from .llama_metadata import compact_llama_metadata
 from .llama_settings import configure_llamaindex_settings
 
 
@@ -162,7 +163,10 @@ class GlobalLlamaIndexService:
         """把内部 RAG 文档转换为 LlamaIndex Document 并构建向量索引。"""
         document_factory, index_factory, _, _ = self._resolve_llamaindex_types()
         llama_documents = [
-            document_factory(text=document.text, metadata=document.metadata)
+            document_factory(
+                text=document.text,
+                metadata=compact_llama_metadata(document.metadata),
+            )
             for document in documents
         ]
         return index_factory.from_documents(llama_documents)
@@ -324,4 +328,4 @@ class GlobalLlamaIndexService:
         return 1
 
 
-__all__ = ["GlobalIndexHit", "GlobalLlamaIndexService"]
+__all__ = ["GlobalIndexHit", "GlobalLlamaIndexService", "compact_llama_metadata"]

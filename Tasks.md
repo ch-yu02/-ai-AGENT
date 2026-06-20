@@ -17,6 +17,10 @@
 - [x] Cloud/local OpenAI-compatible LLM provider support.
 - [x] Internal LLM-backed knowledge extraction during recording and at session end.
 - [x] WhisperLive server wrapper and WhisperLive/Qwen Markdown pipeline.
+- [x] ALSA microphone capture path streams live audio to WhisperLive and the
+  existing transcript/notes/graph workflow.
+- [x] WhisperLive microphone partials can show as frontend-only preview subtitles;
+  only final subtitles are persisted.
 - [x] Local Qwen generates structured classroom notes without rewriting realtime subtitles.
 - [x] Cloud notes-agent can infer final classroom title/course from notes.
 - [x] Notes-agent endpoint for Markdown-driven graph updates.
@@ -44,6 +48,8 @@
 - [ ] Verify frontend can attach to script-created recording sessions reliably on the target device.
 - [ ] Add a concise full-chain manual test record with observed timings.
 - [ ] Validate browser camera permission/device behavior on the target board.
+- [ ] Validate ALSA microphone selection, gain, and WhisperLive latency on the
+  target board.
 - [ ] Decide whether hardware camera capture should call the same image upload +
   visual analysis endpoint or provide its own capture service wrapper.
 

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from pydantic import ValidationError
 
 from backend.app import prompts
 from backend.app.knowledge_quality import is_low_value_entity_name
-from backend.app.llm import CloudLLMClient, CloudLLMError, load_llm_settings
+from backend.app.llm import CloudLLMClient, CloudLLMError, LLMSettings, load_llm_settings
 from backend.app.models import (
     ClassroomContext,
     ImageCapture,
@@ -21,6 +21,9 @@ from backend.app.models import (
 )
 
 from .schemas import VisualAnalysisRequest
+
+VISUAL_TIMEOUT_FAILURE_STEP = 0.8
+VISUAL_TIMEOUT_MAX_SECONDS = 300.0
 
 
 class MultimodalJsonLLMClient(Protocol):
@@ -57,10 +60,12 @@ class ClassroomVisualAnalysisAgent:
     def __init__(self, llm_client: MultimodalJsonLLMClient | None = None) -> None:
         self.llm_client = llm_client
         self._processed_images: dict[str, set[str]] = {}
+        self._failed_images: dict[str, dict[str, int]] = {}
 
     def reset(self) -> None:
         """Clear in-memory duplicate tracking; mainly used by tests."""
         self._processed_images.clear()
+        self._failed_images.clear()
 
     def analyze(
         self,
@@ -87,13 +92,17 @@ class ClassroomVisualAnalysisAgent:
         ):
             return VisualAnalysisResult(visual=visual, skipped=True)
 
-        client = self._client_or_none()
+        failure_count = self._failure_count(request.session_id, request.image_id)
+        client = self._client_or_none(failure_count=failure_count)
         if client is None:
-            failed_visual = visual.model_copy(update={"status": "failed"})
+            warning = "Cloud multimodal LLM is not configured for image analysis."
+            failed_visual = visual.model_copy(
+                update={"status": "failed", "caption": warning}
+            )
             return VisualAnalysisResult(
                 visual=failed_visual,
                 failed=True,
-                warnings=("Cloud multimodal LLM is not configured for image analysis.",),
+                warnings=(warning,),
             )
 
         try:
@@ -120,27 +129,56 @@ class ClassroomVisualAnalysisAgent:
                 source_visual=visual,
             )
         except (CloudLLMError, ValidationError, KeyError, TypeError, ValueError) as exc:
-            failed_visual = visual.model_copy(update={"status": "failed"})
+            next_failure_count = self._record_failure(request.session_id, request.image_id)
+            next_timeout = _visual_timeout_seconds(
+                load_llm_settings().timeout_seconds,
+                next_failure_count,
+            )
+            warning = f"Cloud multimodal image analysis failed: {exc}"
+            if isinstance(exc, CloudLLMError):
+                warning = f"{warning}; next retry timeout: {next_timeout:.0f}s"
+            failed_visual = visual.model_copy(
+                update={"status": "failed", "caption": warning}
+            )
             return VisualAnalysisResult(
                 visual=failed_visual,
                 failed=True,
-                warnings=(f"Cloud multimodal image analysis failed: {exc}",),
+                warnings=(warning,),
             )
 
         self._processed_images.setdefault(request.session_id, set()).add(fingerprint)
+        self._clear_failure(request.session_id, request.image_id)
         return VisualAnalysisResult(
             visual=normalized_visual,
             extraction=extraction,
             warnings=tuple(warnings),
         )
 
-    def _client_or_none(self) -> MultimodalJsonLLMClient | None:
+    def _client_or_none(self, *, failure_count: int = 0) -> MultimodalJsonLLMClient | None:
         if self.llm_client is not None:
             return self.llm_client
         settings = load_llm_settings()
         if not settings.enabled:
             return None
+        settings = _settings_with_visual_timeout(settings, failure_count)
         return CloudLLMClient(settings)
+
+    def _failure_count(self, session_id: str, image_id: str) -> int:
+        return self._failed_images.get(session_id, {}).get(image_id, 0)
+
+    def _record_failure(self, session_id: str, image_id: str) -> int:
+        session_failures = self._failed_images.setdefault(session_id, {})
+        next_count = session_failures.get(image_id, 0) + 1
+        session_failures[image_id] = next_count
+        return next_count
+
+    def _clear_failure(self, session_id: str, image_id: str) -> None:
+        session_failures = self._failed_images.get(session_id)
+        if not session_failures:
+            return
+        session_failures.pop(image_id, None)
+        if not session_failures:
+            self._failed_images.pop(session_id, None)
 
     def _validate_payload(
         self,
@@ -192,6 +230,21 @@ def _find_visual(context: ClassroomContext, image_id: str) -> ImageCapture | Non
         if visual.image_id == image_id:
             return visual
     return None
+
+
+def _settings_with_visual_timeout(settings: LLMSettings, failure_count: int) -> LLMSettings:
+    timeout_seconds = _visual_timeout_seconds(settings.timeout_seconds, failure_count)
+    if timeout_seconds == settings.timeout_seconds:
+        return settings
+    return replace(settings, timeout_seconds=timeout_seconds)
+
+
+def _visual_timeout_seconds(base_timeout: float, failure_count: int) -> float:
+    base_timeout = max(1.0, base_timeout)
+    if failure_count <= 0:
+        return base_timeout
+    cap = max(VISUAL_TIMEOUT_MAX_SECONDS, base_timeout)
+    return min(cap, base_timeout * (1 + VISUAL_TIMEOUT_FAILURE_STEP * failure_count))
 
 
 def _image_fingerprint(image_bytes: bytes) -> str:

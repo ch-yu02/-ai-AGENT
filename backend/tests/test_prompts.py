@@ -9,6 +9,15 @@ class PromptTemplatesTest(unittest.TestCase):
         self.assertIn("todos", prompts.todo_system_prompt())
         self.assertIn("quiz", prompts.quiz_system_prompt())
 
+    def test_todo_prompt_generates_study_todos_when_no_explicit_assignment(self) -> None:
+        system_prompt = prompts.todo_system_prompt()
+        user_prompt = prompts.todo_user_prompt("课堂资料：今天讲采样定理。")
+
+        self.assertIn("不要返回空数组", system_prompt)
+        self.assertIn("3 到 5", system_prompt)
+        self.assertIn("generated_review", system_prompt)
+        self.assertIn("生成 3 到 5 个", user_prompt)
+
     def test_grounded_qa_prompt_includes_question_answer_and_sources(self) -> None:
         prompt = prompts.grounded_qa_user_prompt(
             student_prompt="采样定理为什么重要？",

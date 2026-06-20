@@ -459,6 +459,7 @@ class WhisperLiveFileClient:
         same_output_threshold: int,
         connect_timeout: float,
         on_completed_segment: Callable[[WhisperLiveSegment], None] | None = None,
+        on_partial_segment: Callable[[WhisperLiveSegment], None] | None = None,
     ) -> None:
         try:
             import websocket  # noqa: PLC0415
@@ -484,6 +485,7 @@ class WhisperLiveFileClient:
         self._receiver_error: Exception | None = None
         self._receiver_stop = threading.Event()
         self.on_completed_segment = on_completed_segment
+        self.on_partial_segment = on_partial_segment
 
     def transcribe_file(
         self,
@@ -570,6 +572,7 @@ class WhisperLiveFileClient:
 
     def _remember_segment(self, segment: WhisperLiveSegment) -> None:
         completed_to_notify: WhisperLiveSegment | None = None
+        partial_to_notify: WhisperLiveSegment | None = None
         with self._segments_lock:
             if segment.completed:
                 key = (f"{segment.start:.3f}", f"{segment.end:.3f}", segment.text)
@@ -580,11 +583,15 @@ class WhisperLiveFileClient:
                 completed_to_notify = segment
             elif not self.segments or self.segments[-1].completed:
                 self.segments.append(segment)
+                partial_to_notify = segment
             else:
                 self.segments[-1] = segment
+                partial_to_notify = segment
 
         if completed_to_notify is not None and self.on_completed_segment is not None:
             self.on_completed_segment(completed_to_notify)
+        if partial_to_notify is not None and self.on_partial_segment is not None:
+            self.on_partial_segment(partial_to_notify)
 
     def _wait_for_ready(self) -> None:
         deadline = time.time() + self.connect_timeout

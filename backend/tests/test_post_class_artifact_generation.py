@@ -93,6 +93,56 @@ class PostClassArtifactGenerationTest(unittest.TestCase):
         self.assertTrue((self.storage.session_dir(self.session_id) / "todos.json").exists())
         self.assertFalse((self.storage.session_dir(self.session_id) / "quiz.json").exists())
 
+    def test_finalizer_keeps_post_class_files_when_final_extraction_fails(self) -> None:
+        context = ClassroomContext(
+            session_id=self.session_id,
+            transcript=[
+                TranscriptSegment(
+                    segment_id="seg_001",
+                    session_id=self.session_id,
+                    start_ts=1.0,
+                    end_ts=3.0,
+                    text="作业是完成第三题。傅里叶变换可以转换到频域。",
+                )
+            ],
+        )
+        graph = KnowledgeTree(
+            session_id=self.session_id,
+            nodes=[KnowledgeNode(node_id="node_fourier", label="傅里叶变换")],
+        )
+        ended_session = LectureSession(
+            session_id=self.session_id,
+            title="课后后台生成测试",
+            course="通信原理",
+            teacher=None,
+            start_time="2026-06-04T09:00:00+08:00",
+            end_time="2026-06-04T10:30:00+08:00",
+            status="ended",
+            language="zh-CN",
+            created_by="student",
+            device_id=None,
+        )
+
+        with patch.object(
+            sessions_api,
+            "_run_internal_knowledge_extraction",
+            side_effect=RuntimeError("cloud extractor timeout"),
+        ):
+            result = sessions_api._finalize_session_after_end_sync(
+                session_id=self.session_id,
+                ended_session=ended_session,
+                context_snapshot=context,
+                knowledge_graph_snapshot=graph,
+                structured_notes_markdown=None,
+            )
+
+        self.assertEqual(result["status"], "ready")
+        self.assertIn("Final knowledge extraction failed", result["warnings"][0])
+        storage = result["storage"]
+        self.assertEqual(storage["knowledge_extraction"]["status"], "failed")
+        self.assertTrue((self.storage.session_dir(self.session_id) / "summary.md").exists())
+        self.assertTrue((self.storage.session_dir(self.session_id) / "todos.json").exists())
+
     def test_rag_index_helper_skips_when_llamaindex_backend_is_disabled(self) -> None:
         result = sessions_api._build_rag_index_when_enabled(
             session_id=self.session_id,

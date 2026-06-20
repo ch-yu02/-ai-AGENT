@@ -200,6 +200,29 @@ class LlamaIndexQueryServiceTest(unittest.TestCase):
             "结构化课堂笔记：傅里叶变换是本节重点。",
         )
 
+    def test_build_index_compacts_long_metadata_before_llamaindex(self) -> None:
+        service = self._service()
+        documents = [
+            RagDocument(
+                text="傅里叶变换用于频域分析。",
+                metadata={
+                    "session_id": "lec_llama_001",
+                    "type": "structured_note",
+                    "source_id": "structured_notes",
+                    "display_text": "结构化课堂笔记" * 600,
+                    "irrelevant_blob": "x" * 6000,
+                },
+            )
+        ]
+
+        index = service._build_index(documents)
+
+        metadata = index.documents[0].metadata
+        self.assertEqual(metadata["session_id"], "lec_llama_001")
+        self.assertEqual(metadata["source_id"], "structured_notes")
+        self.assertLessEqual(len(metadata["display_text"]), 240)
+        self.assertNotIn("irrelevant_blob", metadata)
+
     def test_query_falls_back_to_lexical_when_llamaindex_fails(self) -> None:
         service = LlamaIndexQueryService(
             fallback=QueryService(),

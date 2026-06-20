@@ -25,6 +25,14 @@ class TodoDetectiveSkill:
     """从课堂字幕中提取疑似待办。"""
 
     _todo_keywords = ("作业", "待办", "预习", "复习", "考试", "提交", "完成", "下节课")
+    _generated_todo_types = {
+        "generated_review",
+        "generated",
+        "review",
+        "practice",
+        "self_check",
+        "study_plan",
+    }
 
     def __init__(self, llm_client: JsonLLMClient | None = None) -> None:
         # 生产环境按 LLM_API_KEY 自动启用；测试可注入 fake client。没有配置时
@@ -137,14 +145,20 @@ class TodoDetectiveSkill:
             knowledge_graph,
         )
 
-        if items:
+        if items and all(self._is_generated_todo(item) for item in items):
+            answer = (
+                "没有找到老师明确布置的待办；我基于课堂内容生成了这些课后学习待办：\n"
+                + "\n".join(f"- {item['title']}" for item in items)
+            )
+            warnings = ["这些是模型根据课堂内容生成的学习建议，不代表老师明确布置。"]
+        elif items:
             answer = "我找到这些待办或考试相关提醒：\n" + "\n".join(
                 f"- {item['title']}" for item in items
             )
             warnings: list[str] = []
         else:
-            answer = "没有在课堂资料中找到明确的作业或待办提醒。"
-            warnings = []
+            answer = "没有在课堂资料中找到明确的作业或待办提醒，且模型没有生成学习待办。"
+            warnings = ["LLM 未按要求生成 3 到 5 个课后学习待办。"]
 
         return SkillResult(
             answer=answer,
@@ -171,6 +185,11 @@ class TodoDetectiveSkill:
             "source_refs": source_refs if isinstance(source_refs, list) else [],
             "confidence": max(0.0, min(1.0, float(confidence))),
         }
+
+    def _is_generated_todo(self, item: dict[str, Any]) -> bool:
+        """Return whether a todo is an LLM-generated study suggestion."""
+        item_type = str(item.get("type", "")).strip().lower()
+        return item_type in self._generated_todo_types
 
 
 __all__ = ["TodoDetectiveSkill"]

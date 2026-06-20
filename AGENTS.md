@@ -51,10 +51,22 @@ POST /events(transcript.segment/image.capture)
 -> WS /ws/{session_id}
 ```
 
+WhisperLive microphone partials use a separate preview-only path:
+
+```text
+POST /events/transcript-preview
+-> WS transcript.preview
+-> one replaceable frontend "正在识别" subtitle row
+```
+
+Preview subtitles are never written to transcript, timeline, notes, graph, or
+history; completed/final subtitles still use `transcript.segment`.
+
 WhisperLive/Qwen notes:
 
 ```text
-WhisperLive ASR draft
+local audio file or ALSA microphone
+-> WhisperLive ASR draft
 -> local Qwen structured notes
 -> data/sessions/{session_id}/structured_notes.md
 -> POST /agent/knowledge-tree/update-from-notes
@@ -115,6 +127,8 @@ scripts/dev.sh install-whisperlive
 scripts/dev.sh whisperlive-server --port 9090
 scripts/dev.sh whisperlive-md --max-audio-seconds 300 --update-every-seconds 30
 scripts/dev.sh whisperlive-md --enable-cloud-graph --max-audio-seconds 300
+scripts/dev.sh whisperlive-mic --enable-cloud-graph
+scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --no-qwen-notes
 ```
 
 Local audio smoke:

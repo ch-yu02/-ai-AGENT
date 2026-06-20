@@ -66,10 +66,10 @@ POST /sessions/start
 GET /sessions/recording
 ```
 
-`audio-stream` 和 `whisperlive-md` 默认会尝试接入最新录制中课堂；如果没有
-可用课堂，可自动创建测试课堂。因此本地测试通常不再需要手动复制
-`session_id`。真实硬件或外部服务接入时，仍建议显式使用前端创建的
-`session_id`，便于课堂归属、权限和问题排查。
+`audio-stream`、`whisperlive-md` 和 `whisperlive-mic` 默认会尝试接入最新
+录制中课堂；如果没有可用课堂，可自动创建测试课堂。因此本地测试通常不再
+需要手动复制 `session_id`。真实硬件或外部服务接入时，仍建议显式使用前端
+创建的 `session_id`，便于课堂归属、权限和问题排查。
 
 ### 2.2 只向 recording 状态课堂写入
 
@@ -496,7 +496,9 @@ POST /agent/visual/analyze
   `source_visual_ids=["img_001"]`。
 
 若未配置多模态云端 LLM 或调用失败，后端会把该图片状态更新为 `failed`，
-并在响应 `warnings` 中说明原因。
+并在响应 `warnings` 中说明原因。录制中的前端会对失败分析做短延迟自动重试，
+重试请求使用 `force=true`；后端会根据同一张图片此前失败次数适度放宽云端
+LLM timeout。课堂结束或切换 session 后不再自动重试。
 
 ## 6. 内部知识抽取输出：knowledge.extraction
 
@@ -670,8 +672,9 @@ extracts
 ### 6.7 内部知识抽取触发时机
 
 外部模块不需要控制知识抽取触发。当前后端会在接收字幕或视觉事件后，根据
-内部批量策略决定是否触发 LLM-backed 知识抽取；结束课堂前也会再运行一次
-批量抽取。
+内部批量策略决定是否触发 LLM-backed 知识抽取；结束课堂接口先保存核心文件
+并返回，最终批量抽取会在课后后台任务中继续执行，完成后广播
+`post_class.updated`。
 
 调试或自定义内部模块时建议：
 
@@ -744,7 +747,8 @@ curl -X POST http://127.0.0.1:8000/events \
 5. EDU-Mate 内部知识抽取模块根据 seg_001/seg_002/img_001 生成 knowledge.extraction(ext_001)
 6. KnowledgeGraphManager 根据内部 knowledge.extraction 更新知识图谱
 7. 重复 2-6
-8. 前端结束课堂
+8. 前端结束课堂，后端先保存核心文件并返回
+9. 后端后台生成课后产物、最终知识抽取和可选 RAG 索引
 ```
 
 示例顺序：
@@ -764,7 +768,8 @@ curl -X POST http://127.0.0.1:8000/events \
 如果使用当前 WhisperLive/Qwen 笔记链路，还会额外出现：
 
 ```text
-WhisperLive 字幕草稿
+本地音频文件或 ALSA 麦克风
+→ WhisperLive 字幕草稿
 → 本地 Qwen 定期维护 structured_notes.md
 → POST /agent/knowledge-tree/update-from-notes
 → 云端 notes-agent 生成内部 knowledge.extraction
@@ -774,6 +779,22 @@ WhisperLive 字幕草稿
 
 本地 Qwen 当前只负责结构化课堂笔记，不再润色或替换前端实时字幕；前端字幕
 展示的是 ASR/WhisperLive 发送的 `transcript.segment`。
+
+真实麦克风联调可使用：
+
+```bash
+scripts/dev.sh whisperlive-server --port 9090
+scripts/dev.sh whisperlive-mic --enable-cloud-graph
+```
+
+`whisperlive-mic` 参考桌面采集项目的 ALSA/ffmpeg 方案自动选择 USB 麦克风，
+但输出仍然是标准 `transcript.segment`，不会新增后端事件类型。
+
+为降低前端体感延迟，`whisperlive-mic` 还会把 WhisperLive partial 字幕发送到
+`POST /events/transcript-preview`。这是 WebSocket 预览通道，只更新前端底部
+“正在识别”临时字幕，不会写入 `ClassroomContext.transcript`、timeline、
+`structured_notes.md`、知识图谱或历史文件。外部 ASR 正式输入仍然只应使用
+`transcript.segment`。
 
 ## 8. 硬件组对接约定
 
@@ -965,7 +986,7 @@ EDU-Mate 知识抽取模块：
 - [ ] 页面显示 `session_id`
 - [ ] WebSocket 已连接
 - [ ] 能展示 ASR、OCR/VLM 和内部知识抽取产生的图谱更新
-- [ ] 结束课堂后仍保留展示结果
+- [ ] 结束课堂后仍保留展示结果，并能展示“课后产物生成中/已生成/失败”
 
 ## 12. 最小端到端样例
 

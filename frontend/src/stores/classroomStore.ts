@@ -8,7 +8,9 @@ import type {
   KnowledgeGraphView,
   KnowledgeNode,
   LectureSession,
+  PostClassStatus,
   SessionHistoryDetail,
+  SessionPostClassArtifacts,
   TimelineItem,
   TranscriptSegment,
   WebSocketMessage,
@@ -27,6 +29,7 @@ export const initialDashboardState: ClassroomDashboardState = {
   websocketStatus: "disconnected",
   eventCount: 0,
   transcript: [],
+  partialTranscript: null,
   timeline: [],
   visuals: [],
   graph: {
@@ -34,6 +37,7 @@ export const initialDashboardState: ClassroomDashboardState = {
     edges: [],
     version: 0,
   },
+  postClassStatus: "idle",
   postClassArtifacts: {
     summary_markdown: null,
     todos: [],
@@ -75,6 +79,12 @@ export type ClassroomAction =
       // dashboard；否则保持当前看板不变。
       type: "history.deleted";
       sessionId: string;
+    }
+  | {
+      // 用户在课后产物面板主动生成自测后，直接把 Agent 返回的 quiz artifact
+      // 合并进当前看板，避免必须重新打开历史课堂才能看到 quiz.json 内容。
+      type: "post_class.quiz.generated";
+      quiz: Array<Record<string, unknown>>;
     };
 
 export function classroomReducer(
@@ -97,6 +107,7 @@ export function classroomReducer(
         ...state,
         session: action.session,
         websocketStatus: "disconnected",
+        postClassStatus: "generating",
       };
 
     case "session.updated":
@@ -125,6 +136,17 @@ export function classroomReducer(
       }
 
       return initialDashboardState;
+
+    case "post_class.quiz.generated":
+      return {
+        ...state,
+        postClassStatus:
+          state.postClassStatus === "idle" ? "ready" : state.postClassStatus,
+        postClassArtifacts: {
+          ...state.postClassArtifacts,
+          quiz: action.quiz,
+        },
+      };
   }
 }
 
@@ -143,6 +165,7 @@ function applyHistoryDetail(detail: SessionHistoryDetail): ClassroomDashboardSta
     websocketStatus: "disconnected",
     eventCount: detail.timeline.length,
     transcript: extractTranscriptFromTimeline(detail.timeline),
+    partialTranscript: null,
     timeline: detail.timeline,
     visuals: extractVisualsFromTimeline(detail.timeline),
     graph: {
@@ -151,10 +174,11 @@ function applyHistoryDetail(detail: SessionHistoryDetail): ClassroomDashboardSta
       version: detail.knowledge_graph.version,
     },
     postClassArtifacts: detail.post_class_artifacts ?? emptyPostClassArtifacts(),
+    postClassStatus: "ready",
   };
 }
 
-function emptyPostClassArtifacts() {
+function emptyPostClassArtifacts(): SessionPostClassArtifacts {
   return {
     summary_markdown: null,
     todos: [],
@@ -178,11 +202,22 @@ function applyWebSocketMessage(
   }
 
   if (message.type === "session.ended") {
-    return applySessionEndedMessage(state, message);
+    return {
+      ...applySessionEndedMessage(state, message),
+      partialTranscript: null,
+    };
   }
 
   if (message.type === "session.updated") {
     return applySessionUpdatedMessage(state, message);
+  }
+
+  if (message.type === "transcript.preview") {
+    return applyTranscriptPreviewMessage(state, message);
+  }
+
+  if (message.type === "post_class.updated") {
+    return applyPostClassUpdatedMessage(state, message);
   }
 
   if (message.type === "event.received") {
@@ -191,6 +226,67 @@ function applyWebSocketMessage(
 
   // session.started 通常发生在前端连接 WebSocket 之前，当前 MVP 不依赖它。
   return state;
+}
+
+function applyPostClassUpdatedMessage(
+  state: ClassroomDashboardState,
+  message: WebSocketMessage,
+): ClassroomDashboardState {
+  const status = parsePostClassStatus(message.data.status);
+  const artifacts = parsePostClassArtifacts(message.data.post_class_artifacts);
+
+  return {
+    ...state,
+    postClassStatus: status,
+    postClassArtifacts: artifacts ?? state.postClassArtifacts,
+  };
+}
+
+function parsePostClassStatus(value: unknown): PostClassStatus {
+  return value === "ready" || value === "failed" || value === "generating"
+    ? value
+    : "ready";
+}
+
+function parsePostClassArtifacts(value: unknown): SessionPostClassArtifacts | null {
+  const data = readObject(value);
+  if (!data) {
+    return null;
+  }
+  return {
+    summary_markdown:
+      typeof data.summary_markdown === "string" ? data.summary_markdown : null,
+    todos: Array.isArray(data.todos) ? data.todos.flatMap(readRecord) : [],
+    quiz: Array.isArray(data.quiz) ? data.quiz.flatMap(readRecord) : [],
+    agent_artifacts: Array.isArray(data.agent_artifacts)
+      ? data.agent_artifacts.flatMap(readRecord)
+      : [],
+    agent_messages: Array.isArray(data.agent_messages)
+      ? data.agent_messages.flatMap(readRecord)
+      : [],
+  };
+}
+
+function applyTranscriptPreviewMessage(
+  state: ClassroomDashboardState,
+  message: WebSocketMessage,
+): ClassroomDashboardState {
+  const payload = readObject(message.data.payload);
+  if (!isTranscriptSegment(payload)) {
+    return state;
+  }
+
+  return {
+    ...state,
+    eventCount:
+      typeof message.data.event_count === "number"
+        ? message.data.event_count
+        : state.eventCount,
+    partialTranscript: {
+      ...payload,
+      is_final: false,
+    },
+  };
 }
 
 function applySessionUpdatedMessage(
@@ -274,6 +370,7 @@ function applyEventReceivedMessage(
     nextState = {
       ...nextState,
       transcript: upsertById(nextState.transcript, normalizedPayload, "segment_id"),
+      partialTranscript: null,
     };
   }
 
@@ -572,6 +669,11 @@ function readObject(value: unknown): Record<string, unknown> | null {
   }
 
   return null;
+}
+
+function readRecord(value: unknown): Array<Record<string, unknown>> {
+  const data = readObject(value);
+  return data ? [data] : [];
 }
 
 function readNumber(value: unknown): number {

@@ -33,7 +33,7 @@ normalize_proxy_env() {
 
 should_load_env_file() {
   case "$DEV_COMMAND" in
-    backend|frontend|dev|mock|audio-stream|whisperlive-server|whisperlive-md|llm-smoke|rag-smoke|rebuild-global-index|build|install-rag)
+    backend|frontend|dev|mock|audio-stream|whisperlive-server|whisperlive-md|whisperlive-mic|llm-smoke|rag-smoke|rebuild-global-index|build|install-rag)
       return 0
       ;;
     *)
@@ -84,6 +84,7 @@ Commands:
   whisperlive-server
                    Start WhisperLive OpenVINO websocket server on iGPU
   whisperlive-md   Stream local audio to WhisperLive and periodically update Qwen notes
+  whisperlive-mic  Stream ALSA microphone audio to WhisperLive and EDU-Mate
   llm-smoke        Manually test configured LLM provider with fixed classroom data
   rag-smoke        Smoke-test configured RAG backend and vector fallback status
   rebuild-global-index
@@ -110,6 +111,9 @@ Examples:
   scripts/dev.sh whisperlive-md --enable-cloud-graph --max-audio-seconds 300 --update-every-seconds 30 --graph-update-every-seconds 60
   scripts/dev.sh whisperlive-md --domain-terms "线性代数,矩阵,特征值" --max-audio-seconds 60 --update-every-seconds 20
   scripts/dev.sh whisperlive-md --whisperlive-model OpenVINO/whisper-medium-fp16-ov --max-audio-seconds 60 --fast-send
+  scripts/dev.sh whisperlive-mic --enable-cloud-graph
+  scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language '<|zh|>' --no-qwen-notes
+  scripts/dev.sh whisperlive-mic --partial-preview-interval 0.5 --same-output-threshold 2
   BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
 EOF
 }
@@ -260,7 +264,7 @@ run_install_whisperlive() {
     "python-multipart"
   echo
   echo "WhisperLive lightweight OpenVINO setup installed in: $OPENVINO_PYTHON"
-  echo "Microphone/PyAudio dependencies are intentionally not installed for this file-stream smoke path."
+  echo "WhisperLive microphone capture uses system ffmpeg + ALSA; no PyAudio dependency is required."
 }
 
 run_mock() {
@@ -291,6 +295,12 @@ run_whisperlive_md() {
   require_openvino_python
   cd "$ROOT_DIR"
   "$OPENVINO_PYTHON" backend/scripts/whisperlive_qwen_markdown.py "${@:2}"
+}
+
+run_whisperlive_mic() {
+  require_openvino_python
+  cd "$ROOT_DIR"
+  "$OPENVINO_PYTHON" backend/scripts/whisperlive_microphone.py "${@:2}"
 }
 
 run_llm_smoke() {
@@ -359,6 +369,9 @@ case "$command" in
     ;;
   whisperlive-md)
     run_whisperlive_md "$@"
+    ;;
+  whisperlive-mic)
+    run_whisperlive_mic "$@"
     ;;
   llm-smoke)
     run_llm_smoke

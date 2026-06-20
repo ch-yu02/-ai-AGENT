@@ -30,6 +30,7 @@ import type {
 type KnowledgeGraphPanelProps = {
   graph: KnowledgeGraphView;
   focusedSource?: GlobalSearchSourceRef | null;
+  isFinal?: boolean;
   transcript?: TranscriptSegment[];
   visuals?: ImageCapture[];
 };
@@ -39,6 +40,7 @@ type GraphViewMode = "list" | "graph";
 export function KnowledgeGraphPanel({
   graph,
   focusedSource,
+  isFinal = false,
   transcript = [],
   visuals = [],
 }: KnowledgeGraphPanelProps) {
@@ -60,7 +62,7 @@ export function KnowledgeGraphPanel({
       <div className="panel-header">
         <div>
           <h2 id="graph-title">知识图谱</h2>
-          <span>v{graph.version}</span>
+          <span>{isFinal ? "final" : `v${graph.version}`}</span>
         </div>
         <strong>{graph.nodes.length}</strong>
       </div>

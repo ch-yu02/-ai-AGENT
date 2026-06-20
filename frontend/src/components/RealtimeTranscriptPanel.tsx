@@ -12,11 +12,13 @@ import { formatClassTime } from "../utils/time";
 // 解析出 TranscriptSegment，并追加到 transcript 数组。
 type RealtimeTranscriptPanelProps = {
   transcript: TranscriptSegment[];
+  partialTranscript?: TranscriptSegment | null;
   focusedSource?: GlobalSearchSourceRef | null;
 };
 
 export function RealtimeTranscriptPanel({
   transcript,
+  partialTranscript,
   focusedSource,
 }: RealtimeTranscriptPanelProps) {
   // 字幕是“实时流”，用户最关心最新一句。
@@ -33,7 +35,7 @@ export function RealtimeTranscriptPanel({
     }
 
     list.scrollTop = list.scrollHeight;
-  }, [transcript.length]);
+  }, [transcript.length, partialTranscript?.text]);
 
   useEffect(() => {
     if (focusedSource?.type !== "segment") {
@@ -55,7 +57,7 @@ export function RealtimeTranscriptPanel({
         </div>
       </div>
 
-      {transcript.length === 0 ? (
+      {transcript.length === 0 && !partialTranscript ? (
         <EmptyState label="等待字幕" />
       ) : (
         <div className="scroll-list transcript-list" ref={listRef}>
@@ -84,6 +86,19 @@ export function RealtimeTranscriptPanel({
               <p>{segment.text}</p>
             </article>
           ))}
+          {partialTranscript ? (
+            <article className="transcript-item transcript-preview-item">
+              <div className="item-meta">
+                <span>
+                  {formatClassTime(partialTranscript.start_ts)} -{" "}
+                  {formatClassTime(partialTranscript.end_ts)}
+                </span>
+                <span>{partialTranscript.speaker || "teacher"}</span>
+                <span>正在识别</span>
+              </div>
+              <p>{partialTranscript.text}</p>
+            </article>
+          ) : null}
         </div>
       )}
     </section>

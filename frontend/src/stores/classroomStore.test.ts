@@ -136,6 +136,162 @@ describe("classroomReducer", () => {
     expect(state.transcript[0].text).toContain("原始 payload");
   });
 
+  it("shows transcript preview without adding timeline or saved transcript", () => {
+    const previewState = classroomReducer(initialDashboardState, {
+      type: "websocket.messageReceived",
+      message: {
+        type: "transcript.preview",
+        session_id: "lec_test",
+        created_at: "2026-06-05T00:00:00.000000+00:00",
+        data: {
+          event_count: 0,
+          payload: {
+            segment_id: "seg_partial_001",
+            session_id: "lec_test",
+            start_ts: 1,
+            end_ts: 2,
+            text: "正在识别的临时字幕",
+            is_final: false,
+          },
+        },
+      },
+    });
+
+    expect(previewState.transcript).toHaveLength(0);
+    expect(previewState.timeline).toHaveLength(0);
+    expect(previewState.partialTranscript?.text).toContain("临时字幕");
+  });
+
+  it("clears transcript preview when final transcript arrives", () => {
+    const previewState = classroomReducer(initialDashboardState, {
+      type: "websocket.messageReceived",
+      message: {
+        type: "transcript.preview",
+        session_id: "lec_test",
+        created_at: "2026-06-05T00:00:00.000000+00:00",
+        data: {
+          payload: {
+            segment_id: "seg_partial_001",
+            session_id: "lec_test",
+            start_ts: 1,
+            end_ts: 2,
+            text: "正在识别的临时字幕",
+            is_final: false,
+          },
+        },
+      },
+    });
+    const finalState = classroomReducer(previewState, {
+      type: "websocket.messageReceived",
+      message: eventReceivedMessage({
+        event_type: "transcript.segment",
+        event_count: 1,
+        payload: {
+          segment_id: "seg_final_001",
+          session_id: "lec_test",
+          start_ts: 1,
+          end_ts: 2,
+          text: "最终字幕。",
+        },
+        context_update: {
+          session_id: "lec_test",
+          event_type: "transcript.segment",
+          timeline_item: {
+            item_id: "seg_final_001",
+            session_id: "lec_test",
+            type: "transcript",
+            ts: 1,
+            title: "最终字幕。",
+            data: {},
+          },
+          transcript_count: 1,
+          visual_count: 0,
+          knowledge_extraction_count: 0,
+        },
+        graph_patch: null,
+      }),
+    });
+
+    expect(finalState.partialTranscript).toBeNull();
+    expect(finalState.transcript).toHaveLength(1);
+    expect(finalState.transcript[0].text).toBe("最终字幕。");
+  });
+
+  it("marks post-class artifacts as ready from background update", () => {
+    const endedState = classroomReducer(
+      {
+        ...initialDashboardState,
+        session: {
+          session_id: "lec_test",
+          title: "测试课堂",
+          start_time: "2026-06-05T00:00:00+08:00",
+          status: "recording",
+          language: "zh-CN",
+          created_by: "student",
+        },
+      },
+      {
+        type: "session.ended",
+        session: {
+          session_id: "lec_test",
+          title: "测试课堂",
+          start_time: "2026-06-05T00:00:00+08:00",
+          end_time: "2026-06-05T01:00:00+08:00",
+          status: "ended",
+          language: "zh-CN",
+          created_by: "student",
+        },
+      },
+    );
+    const readyState = classroomReducer(endedState, {
+      type: "websocket.messageReceived",
+      message: {
+        type: "post_class.updated",
+        session_id: "lec_test",
+        created_at: "2026-06-05T00:00:00.000000+00:00",
+        data: {
+          status: "ready",
+          post_class_artifacts: {
+            summary_markdown: "这是一份后台生成的总结。",
+            todos: [{ title: "复习第一章", confidence: 0.7 }],
+            quiz: [],
+            agent_artifacts: [],
+            agent_messages: [],
+          },
+        },
+      },
+    });
+
+    expect(endedState.postClassStatus).toBe("generating");
+    expect(readyState.postClassStatus).toBe("ready");
+    expect(readyState.postClassArtifacts.summary_markdown).toContain("后台生成");
+    expect(readyState.postClassArtifacts.todos[0].title).toBe("复习第一章");
+  });
+
+  it("merges generated quiz into post-class artifacts", () => {
+    const state = classroomReducer(
+      {
+        ...initialDashboardState,
+        postClassStatus: "ready",
+        postClassArtifacts: {
+          summary_markdown: "课堂总结",
+          todos: [{ title: "复习第一章" }],
+          quiz: [],
+          agent_artifacts: [],
+          agent_messages: [],
+        },
+      },
+      {
+        type: "post_class.quiz.generated",
+        quiz: [{ question: "第一题？", answer: "答案。" }],
+      },
+    );
+
+    expect(state.postClassArtifacts.summary_markdown).toBe("课堂总结");
+    expect(state.postClassArtifacts.todos[0].title).toBe("复习第一章");
+    expect(state.postClassArtifacts.quiz[0].question).toBe("第一题？");
+  });
+
   it("keeps all timeline items needed by the timeline panel", () => {
     const firstState = classroomReducer(initialDashboardState, {
       type: "websocket.messageReceived",

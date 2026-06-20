@@ -29,6 +29,7 @@
   knowledge_graph.json 写入磁盘
 """
 
+import asyncio
 import os
 
 from fastapi import APIRouter, HTTPException, Request, status
@@ -307,21 +308,23 @@ async def end_session(session_id: str) -> LectureSession:
 
     处理流程
     --------
-    1. 调用 ``session_manager.end_session()`` 将状态从 ``"recording"``
-       转为 ``"ended"``，同时记录 ``end_time``
-    2. 从 ContextManager / KnowledgeGraphManager 读取课堂内存状态
-    3. 调用 LocalStorage 保存 metadata / transcript / timeline / graph
+    1. 从 ContextManager / KnowledgeGraphManager 读取课堂内存状态。
+    2. 调用 ``session_manager.end_session()`` 将状态从 ``"recording"``
+       转为 ``"ended"``，同时记录 ``end_time``。
+    3. 调用 LocalStorage 保存 metadata / transcript / timeline / graph。
     4. 通过 ``websocket_manager.broadcast()`` 推送 ``session.ended``，
-       前端收到后可以停止事件上报、展示课堂总结等
-    5. 返回更新后的 ``LectureSession`` 对象
+       前端收到后可以停止事件上报，并显示课后产物生成中。
+    5. 创建后台任务生成 summary/todos、最终知识抽取和可选 RAG 索引。
+    6. 立刻返回更新后的 ``LectureSession`` 对象，不等待慢任务。
 
-    未来扩展
-    --------
-    触发 LocalStorage 持久化，将以下文件写入会话数据目录：
+    LocalStorage 会先将以下核心文件写入会话数据目录：
     - ``metadata.json`` —— 会话元信息
     - ``transcript.md`` —— 完整课堂文字记录
     - ``timeline.json`` —— 时间轴事件列表
     - ``knowledge_graph.json`` —— 知识图谱节点与边
+
+    后台任务完成后会追加写入 ``summary.md`` / ``todos.json`` 并广播
+    ``post_class.updated``。
     """
     try:
         context = context_manager.get_context(session_id)
@@ -333,10 +336,9 @@ async def end_session(session_id: str) -> LectureSession:
     except KnowledgeGraphNotFoundError:
         raise HTTPException(status_code=404, detail="Knowledge graph not found")
 
-    extraction_result = _run_internal_knowledge_extraction(
-        session_id=session_id,
-        context=context,
-    )
+    context_snapshot = context.model_copy(deep=True)
+    knowledge_graph_snapshot = knowledge_graph.model_copy(deep=True)
+    structured_notes_markdown = markdown_knowledge_tree_agent.latest_markdown(session_id)
 
     try:
         ended_session = session_manager.end_session(session_id)
@@ -347,18 +349,7 @@ async def end_session(session_id: str) -> LectureSession:
         session=ended_session,
         context=context,
         knowledge_graph=knowledge_graph,
-        structured_notes_markdown=markdown_knowledge_tree_agent.latest_markdown(session_id),
-    )
-    post_class_files = _generate_and_save_post_class_artifacts(
-        session_id=session_id,
-        context=context,
-        knowledge_graph=knowledge_graph,
-    )
-    rag_index = _build_rag_index_when_enabled(
-        session_id=session_id,
-        context=context,
-        knowledge_graph=knowledge_graph,
-        structured_notes_markdown=markdown_knowledge_tree_agent.latest_markdown(session_id),
+        structured_notes_markdown=structured_notes_markdown,
     )
 
     await websocket_manager.broadcast(
@@ -374,17 +365,135 @@ async def end_session(session_id: str) -> LectureSession:
                         name: str(path)
                         for name, path in storage_result.files.items()
                     },
-                    "post_class_files": {
-                        name: str(path)
-                        for name, path in post_class_files.items()
+                    "post_class_files": {},
+                    "rag_index": {
+                        "enabled": os.getenv("RAG_QUERY_BACKEND", "lexical").strip().lower()
+                        == "llamaindex",
+                        "status": "pending",
                     },
-                    "rag_index": rag_index,
-                    "knowledge_extraction": extraction_result,
+                    "knowledge_extraction": {
+                        "session_id": session_id,
+                        "status": "pending",
+                    },
+                    "post_class_status": "generating",
                 },
             },
         ),
     )
+    asyncio.create_task(
+        _finalize_session_after_end(
+            session_id=session_id,
+            ended_session=ended_session,
+            context_snapshot=context_snapshot,
+            knowledge_graph_snapshot=knowledge_graph_snapshot,
+            structured_notes_markdown=structured_notes_markdown,
+        )
+    )
     return ended_session
+
+
+async def _finalize_session_after_end(
+    *,
+    session_id: str,
+    ended_session: LectureSession,
+    context_snapshot,
+    knowledge_graph_snapshot,
+    structured_notes_markdown: str | None,
+) -> None:
+    """Generate slow post-class artifacts after the end API has returned."""
+    try:
+        result = await asyncio.to_thread(
+            _finalize_session_after_end_sync,
+            session_id=session_id,
+            ended_session=ended_session,
+            context_snapshot=context_snapshot,
+            knowledge_graph_snapshot=knowledge_graph_snapshot,
+            structured_notes_markdown=structured_notes_markdown,
+        )
+    except Exception as exc:  # noqa: BLE001 - background failure should be visible only.
+        result = {
+            "status": "failed",
+            "warnings": [f"Post-class generation failed: {exc}"],
+        }
+
+    await websocket_manager.broadcast(
+        session_id,
+        WebSocketMessage(
+            type="post_class.updated",
+            session_id=session_id,
+            data=result,
+        ),
+    )
+
+
+def _finalize_session_after_end_sync(
+    *,
+    session_id: str,
+    ended_session: LectureSession,
+    context_snapshot,
+    knowledge_graph_snapshot,
+    structured_notes_markdown: str | None,
+) -> dict[str, object]:
+    """Synchronous post-end work that may call LLMs or build indexes."""
+    warnings: list[str] = []
+    try:
+        extraction_result = _run_internal_knowledge_extraction(
+            session_id=session_id,
+            context=context_snapshot,
+        )
+    except Exception as exc:  # noqa: BLE001 - post-class files should still be generated.
+        extraction_result = {
+            "session_id": session_id,
+            "status": "failed",
+            "errors": [str(exc)],
+        }
+        warnings.append(f"Final knowledge extraction failed: {exc}")
+    try:
+        context_for_save = context_manager.get_context(session_id)
+    except ContextNotFoundError:
+        context_for_save = context_snapshot
+        warnings.append("Context was not available during post-class finalization.")
+    try:
+        graph_for_save = knowledge_graph_manager.get_graph(session_id)
+    except KnowledgeGraphNotFoundError:
+        graph_for_save = knowledge_graph_snapshot
+        warnings.append("Knowledge graph was not available during post-class finalization.")
+
+    storage_result = local_storage.save_session(
+        session=ended_session,
+        context=context_for_save,
+        knowledge_graph=graph_for_save,
+        structured_notes_markdown=structured_notes_markdown,
+    )
+    post_class_files = _generate_and_save_post_class_artifacts(
+        session_id=session_id,
+        context=context_for_save,
+        knowledge_graph=graph_for_save,
+    )
+    rag_index = _build_rag_index_when_enabled(
+        session_id=session_id,
+        context=context_for_save,
+        knowledge_graph=graph_for_save,
+        structured_notes_markdown=structured_notes_markdown,
+    )
+    if isinstance(rag_index.get("warning"), str):
+        warnings.append(str(rag_index["warning"]))
+
+    artifacts = local_storage.read_session(session_id).post_class_artifacts.model_dump()
+    return {
+        "status": "ready",
+        "post_class_artifacts": artifacts,
+        "storage": {
+            "session_dir": str(storage_result.session_dir),
+            "post_class_files": {
+                name: str(path)
+                for name, path in post_class_files.items()
+            },
+            "rag_index": rag_index,
+            "knowledge_extraction": extraction_result,
+        },
+        "warnings": warnings,
+    }
 
 
 def _run_internal_knowledge_extraction(session_id: str, context) -> dict[str, object]:

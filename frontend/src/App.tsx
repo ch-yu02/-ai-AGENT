@@ -9,6 +9,7 @@ import { PostClassArtifactsPanel } from "./components/PostClassArtifactsPanel";
 import { RealtimeTranscriptPanel } from "./components/RealtimeTranscriptPanel";
 import { StatusStrip } from "./components/StatusStrip";
 import { VisualOcrPanel } from "./components/VisualOcrPanel";
+import { chatWithAgent } from "./services/agentApi";
 import {
   ApiError,
   deleteHistorySession,
@@ -21,8 +22,16 @@ import {
 } from "./services/api";
 import { connectClassroomSocket } from "./services/websocket";
 import { classroomReducer, initialDashboardState } from "./stores/classroomStore";
-import type { GlobalSearchSourceRef } from "./types/agent";
+import type { AgentArtifact, GlobalSearchSourceRef } from "./types/agent";
 import type { SessionHistorySummary, WebSocketMessage } from "./types/classroom";
+
+const STATUS_NOTICE_LIMIT = 80;
+
+type StatusNotice = {
+  id: string;
+  message: string;
+  timeLabel: string;
+};
 
 function App() {
   // 页面主状态由 classroomReducer 管理。
@@ -37,10 +46,12 @@ function App() {
   const [isSessionRequestPending, setIsSessionRequestPending] = useState(false);
   const [isAttachRequestPending, setIsAttachRequestPending] = useState(false);
   const [isRenameRequestPending, setIsRenameRequestPending] = useState(false);
+  const [isQuizGenerating, setIsQuizGenerating] = useState(false);
 
-  // 轻量级页面提示。当前只显示 API 成功/失败信息；后续也可以显示
-  // WebSocket 断线、mock sender 联调提示等运行状态。
-  const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  // 页面公告流。WebSocket、历史课堂、拍照、结束课堂等运行状态都追加到这里，
+  // 保留最近若干条并提供滚动查看，避免一条新提示覆盖掉刚发生的重要事件。
+  const [statusMessages, setStatusMessages] = useState<StatusNotice[]>([]);
+  const statusNoticeCounterRef = useRef(0);
 
   // 历史课程列表来自 GET /sessions。
   //
@@ -65,6 +76,20 @@ function App() {
   // WebSocket 是浏览器对象，不属于可渲染 UI 数据，所以用 ref 而不是 state。
   // 这样关闭旧连接时不会触发额外渲染，也能避免开始新课堂后旧 socket 继续推消息。
   const socketRef = useRef<WebSocket | null>(null);
+
+  function setStatusMessage(message: string | null) {
+    if (!message) {
+      return;
+    }
+
+    statusNoticeCounterRef.current += 1;
+    const notice: StatusNotice = {
+      id: `${Date.now()}_${statusNoticeCounterRef.current}`,
+      message,
+      timeLabel: formatStatusNoticeTime(new Date()),
+    };
+    setStatusMessages((current) => [...current, notice].slice(-STATUS_NOTICE_LIMIT));
+  }
 
   // 组件卸载时关闭 WebSocket。
   // Vite 热更新、页面跳转或未来加路由时，如果不清理连接，后端还会保留旧订阅者。
@@ -186,11 +211,6 @@ function App() {
       return;
     }
 
-    if (message.type === "event.received") {
-      setStatusMessage("收到实时事件，页面数据已更新。");
-      return;
-    }
-
     if (message.type === "session.ended") {
       setStatusMessage("收到课堂结束广播。");
       return;
@@ -198,6 +218,14 @@ function App() {
 
     if (message.type === "session.updated") {
       setStatusMessage("课堂名称已自动更新。");
+      return;
+    }
+
+    if (message.type === "post_class.updated") {
+      const status = message.data.status;
+      setStatusMessage(
+        status === "failed" ? "课后产物生成失败，请稍后查看日志。" : "课后产物已生成。",
+      );
     }
   }
 
@@ -301,9 +329,7 @@ function App() {
         type: "session.ended",
         session,
       });
-      socketRef.current?.close();
-      socketRef.current = null;
-      setStatusMessage("课堂已结束，本地文件已由后端保存。");
+      setStatusMessage("课堂已结束，核心文件已保存；课后产物正在后台生成。");
       // 保存发生在后端 end 路由里。HTTP 成功返回后刷新历史列表即可看到
       // 刚结束的课堂；silent 避免覆盖“课堂已结束”的主提示。
       void loadHistorySessions({ silent: true });
@@ -434,6 +460,44 @@ function App() {
     }
   }
 
+  async function handleGenerateQuiz() {
+    if (!state.session) {
+      setStatusMessage("请先选择一节已结束的课堂。");
+      return;
+    }
+    if (state.session.status !== "ended") {
+      setStatusMessage("请先结束课堂，再生成课后自测。");
+      return;
+    }
+
+    setIsQuizGenerating(true);
+    setStatusMessage(null);
+
+    try {
+      const response = await chatWithAgent({
+        session_id: state.session.session_id,
+        prompt: "根据这节课生成 3 到 5 道课后自测题",
+        mode: "quiz",
+        answer_mode: "strict",
+      });
+      const quizArtifact = response.artifacts.find((artifact) => artifact.type === "quiz");
+      const quiz = artifactRecords(quizArtifact);
+      dispatch({
+        type: "post_class.quiz.generated",
+        quiz,
+      });
+      setStatusMessage(
+        quiz.length > 0
+          ? "自测题已生成，并显示在课后产物中。"
+          : "自测生成完成，但模型没有返回可展示题目。",
+      );
+    } catch (error) {
+      setStatusMessage(formatApiError(error, "生成自测失败"));
+    } finally {
+      setIsQuizGenerating(false);
+    }
+  }
+
   return (
     <main className="app-shell">
       {/* 顶部区域只放课堂控制和产品身份，不承载实时数据。 */}
@@ -464,7 +528,24 @@ function App() {
         eventCount={state.eventCount}
       />
 
-      {statusMessage ? <div className="status-message">{statusMessage}</div> : null}
+      {statusMessages.length ? (
+        <section className="status-message-log" aria-label="运行公告">
+          <div className="status-message-header">
+            <strong>运行公告</strong>
+            <span>
+              最近 {statusMessages.length}/{STATUS_NOTICE_LIMIT} 条
+            </span>
+          </div>
+          <ol>
+            {[...statusMessages].reverse().map((notice) => (
+              <li key={notice.id}>
+                <time>{notice.timeLabel}</time>
+                <span>{notice.message}</span>
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
 
       <section className="content-layout" aria-label="课堂内容">
         {/* 历史栏只负责列表和打开动作；具体历史详情如何变成面板状态，
@@ -485,6 +566,7 @@ function App() {
         <section className="dashboard-grid" aria-label="课堂看板内容">
           <RealtimeTranscriptPanel
             focusedSource={focusedSource}
+            partialTranscript={state.partialTranscript}
             transcript={state.transcript}
           />
           <VisualOcrPanel
@@ -496,10 +578,19 @@ function App() {
           <KnowledgeGraphPanel
             focusedSource={focusedSource}
             graph={state.graph}
+            isFinal={state.session?.status === "ended"}
             transcript={state.transcript}
             visuals={state.visuals}
           />
-          <PostClassArtifactsPanel artifacts={state.postClassArtifacts} />
+          <PostClassArtifactsPanel
+            artifacts={state.postClassArtifacts}
+            canGenerateQuiz={
+              state.session?.status === "ended" && state.postClassStatus !== "generating"
+            }
+            isQuizGenerating={isQuizGenerating}
+            onGenerateQuiz={() => void handleGenerateQuiz()}
+            status={state.postClassStatus}
+          />
           <AgentPanel
             persistedMessages={state.postClassArtifacts.agent_messages}
             session={state.session}
@@ -588,6 +679,26 @@ function formatApiError(error: unknown, fallback: string): string {
   }
 
   return fallback;
+}
+
+function formatStatusNoticeTime(date: Date): string {
+  return date.toLocaleTimeString("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+}
+
+function artifactRecords(artifact: AgentArtifact | undefined): Array<Record<string, unknown>> {
+  if (!artifact || !Array.isArray(artifact.content)) {
+    return [];
+  }
+
+  return artifact.content.filter(
+    (item): item is Record<string, unknown> =>
+      typeof item === "object" && item !== null && !Array.isArray(item),
+  );
 }
 
 export default App;

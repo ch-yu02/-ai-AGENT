@@ -137,6 +137,55 @@ class SkillsTest(unittest.TestCase):
         self.assertEqual(todo["confidence"], 0.9)
         self.assertEqual(result.source_refs[0].id, "seg_001")
 
+    def test_todo_detective_accepts_generated_study_todos_from_llm(self) -> None:
+        quiet_context = ClassroomContext(
+            session_id=self.session_id,
+            transcript=[
+                TranscriptSegment(
+                    segment_id="seg_002",
+                    session_id=self.session_id,
+                    start_ts=4.0,
+                    end_ts=8.0,
+                    text="今天重点介绍采样定理的条件和频谱混叠现象。",
+                )
+            ],
+        )
+
+        result = TodoDetectiveSkill(
+            llm_client=FakeLLMClient(
+                {
+                    "todos": [
+                        {
+                            "title": "复习采样定理的适用条件",
+                            "type": "generated_review",
+                            "due_time": None,
+                            "confidence": 0.6,
+                            "source_refs": [{"type": "segment", "id": "seg_002"}],
+                        },
+                        {
+                            "title": "整理频谱混叠相关例题",
+                            "type": "practice",
+                            "due_time": None,
+                            "confidence": 0.6,
+                            "source_refs": [{"type": "segment", "id": "seg_002"}],
+                        },
+                        {
+                            "title": "用自己的话解释采样定理",
+                            "type": "review",
+                            "due_time": None,
+                            "confidence": 0.55,
+                            "source_refs": [{"type": "segment", "id": "seg_002"}],
+                        },
+                    ]
+                }
+            )
+        ).run(self.session_id, quiet_context, self.graph)
+
+        self.assertIn("基于课堂内容生成", result.answer)
+        self.assertEqual(len(result.artifact.content), 3)
+        self.assertEqual(result.artifact.content[0]["type"], "generated_review")
+        self.assertTrue(result.warnings)
+
     def test_quiz_master_uses_llm_payload_when_client_is_available(self) -> None:
         result = QuizMasterSkill(
             llm_client=FakeLLMClient(

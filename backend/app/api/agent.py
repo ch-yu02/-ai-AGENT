@@ -212,10 +212,10 @@ async def update_knowledge_tree_from_notes(
     event path so the frontend receives the usual graph patch.
     """
     try:
-        session_manager.require_recording(request.session_id)
+        session = session_manager.get_session(request.session_id)
     except SessionNotFoundError:
         raise HTTPException(status_code=404, detail="Session not found")
-    except SessionConflictError:
+    if session.status != "recording" and request.update_status != "final":
         raise HTTPException(status_code=409, detail="Session is not recording")
 
     try:
@@ -350,7 +350,12 @@ async def _update_session_metadata_from_notes(
     session_title: str | None,
     course: str | None,
 ) -> bool:
-    """Update classroom metadata from the final cloud notes response."""
+    """Update classroom metadata from the final cloud notes response.
+
+    Final note snapshots may arrive before or after ``/sessions/{id}/end``.
+    Keep both the live in-memory session and the saved ``metadata.json`` in
+    sync when either representation exists.
+    """
     if request.update_status != "final":
         return False
 
@@ -362,12 +367,27 @@ async def _update_session_metadata_from_notes(
     if not updates:
         return False
 
+    updated_session = None
     try:
         updated_session = session_manager.update_session_metadata(
             request.session_id,
             updates,
         )
     except SessionNotFoundError:
+        updated_session = None
+
+    if local_storage.session_exists(request.session_id):
+        try:
+            persisted_session = local_storage.update_session_metadata(
+                request.session_id,
+                updates,
+            )
+            if updated_session is None:
+                updated_session = persisted_session
+        except (FileNotFoundError, ValueError):
+            pass
+
+    if updated_session is None:
         return False
 
     await websocket_manager.broadcast(

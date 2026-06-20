@@ -141,10 +141,27 @@ export function listRecordingSessions(): Promise<LectureSession[]> {
 //
 // 后端 end 接口是幂等的：重复结束同一节课不会产生重复事件语义。
 // 结束时后端会保存 metadata/transcript/timeline/knowledge_graph 到 data/sessions。
-export function endSession(sessionId: string): Promise<LectureSession> {
-  return requestJson<LectureSession>(`/sessions/${sessionId}/end`, {
-    method: "POST",
-  });
+export async function endSession(
+  sessionId: string,
+  timeoutMs = 15000,
+): Promise<LectureSession> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await requestJson<LectureSession>(`/sessions/${sessionId}/end`, {
+      method: "POST",
+      signal: controller.signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "结束课堂请求超时，后端可能仍在保存。请稍后刷新历史课堂确认。",
+      );
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 // 更新课堂标题/课程名称。录制中的课堂会同步内存 session；已保存历史课堂会
@@ -223,12 +240,14 @@ export function sendRealtimeEvent(
 export function analyzeVisualImage(
   sessionId: string,
   imageId: string,
+  options: { force?: boolean } = {},
 ): Promise<VisualAnalysisResponse> {
   return requestJson<VisualAnalysisResponse>("/agent/visual/analyze", {
     method: "POST",
     body: JSON.stringify({
       session_id: sessionId,
       image_id: imageId,
+      force: options.force ?? false,
     }),
   });
 }

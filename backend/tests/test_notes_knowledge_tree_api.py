@@ -1,4 +1,8 @@
 import unittest
+import tempfile
+from pathlib import Path
+
+from fastapi import HTTPException
 
 from backend.app.agent.knowledge_tree_notes import MarkdownKnowledgeTreeAgent
 from backend.app.agent.schemas import NotesKnowledgeTreeUpdateRequest
@@ -10,6 +14,7 @@ from backend.app.core import (
     websocket_manager,
 )
 from backend.app.models import StartSessionRequest
+from backend.app.storage import LocalStorage
 
 
 class FakeWebSocket:
@@ -60,6 +65,9 @@ class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
         self.socket = FakeWebSocket()
         self.original_agent = agent_api.markdown_knowledge_tree_agent
         self.original_to_thread = agent_api.asyncio.to_thread
+        self.original_storage = agent_api.local_storage
+        self.temp_dir = tempfile.TemporaryDirectory()
+        agent_api.local_storage = LocalStorage(Path(self.temp_dir.name) / "sessions")
         agent_api.markdown_knowledge_tree_agent = MarkdownKnowledgeTreeAgent(
             FakeJsonLLMClient()
         )
@@ -71,10 +79,12 @@ class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
     def tearDown(self) -> None:
         agent_api.markdown_knowledge_tree_agent = self.original_agent
         agent_api.asyncio.to_thread = self.original_to_thread
+        agent_api.local_storage = self.original_storage
         session_manager.clear()
         context_manager.clear()
         knowledge_graph_manager.clear()
         websocket_manager.clear()
+        self.temp_dir.cleanup()
 
     async def test_notes_snapshot_updates_graph_and_broadcasts_patch(self) -> None:
         response = await agent_api.update_knowledge_tree_from_notes(
@@ -118,6 +128,61 @@ class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(event_messages), 1)
         self.assertEqual(event_messages[0]["data"]["event_type"], "knowledge.extraction")
         self.assertIsNotNone(event_messages[0]["data"]["graph_patch"])
+
+    async def test_final_notes_title_update_persists_saved_metadata(self) -> None:
+        ended_session = session_manager.end_session(self.session_id)
+        agent_api.local_storage.save_session(
+            session=ended_session,
+            context=context_manager.get_context(self.session_id),
+            knowledge_graph=knowledge_graph_manager.get_graph(self.session_id),
+        )
+
+        response = await agent_api.update_knowledge_tree_from_notes(
+            NotesKnowledgeTreeUpdateRequest(
+                session_id=self.session_id,
+                snapshot_id="notes_001",
+                sequence=1,
+                markdown="# 课堂笔记\n\n- 傅里叶变换包含频域分析。",
+                source_segments=[
+                    {
+                        "segment_id": "seg_001",
+                        "start_ts": 1.0,
+                        "end_ts": 5.0,
+                        "text": "傅里叶变换包含频域分析。",
+                    }
+                ],
+                update_status="final",
+            )
+        )
+
+        self.assertTrue(response.session_metadata_updated)
+        metadata = agent_api.local_storage.read_metadata(self.session_id)
+        self.assertEqual(metadata["title"], "傅里叶变换与频域分析")
+        self.assertEqual(metadata["course"], "信号与系统")
+
+    async def test_ended_session_rejects_non_final_notes_update(self) -> None:
+        session_manager.end_session(self.session_id)
+
+        with self.assertRaises(HTTPException) as caught:
+            await agent_api.update_knowledge_tree_from_notes(
+                NotesKnowledgeTreeUpdateRequest(
+                    session_id=self.session_id,
+                    snapshot_id="notes_001",
+                    sequence=1,
+                    markdown="# 课堂笔记\n\n- 傅里叶变换包含频域分析。",
+                    source_segments=[
+                        {
+                            "segment_id": "seg_001",
+                            "start_ts": 1.0,
+                            "end_ts": 5.0,
+                            "text": "傅里叶变换包含频域分析。",
+                        }
+                    ],
+                    update_status="streaming",
+                )
+            )
+
+        self.assertEqual(caught.exception.status_code, 409)
 
 
 async def _direct_to_thread(func, /, *args, **kwargs):  # type: ignore[no-untyped-def]

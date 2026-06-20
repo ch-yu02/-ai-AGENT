@@ -30,7 +30,10 @@
       └── 5. 返回 EventAcceptedResponse（HTTP 202）
 """
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, ValidationError
 
 from backend.app.core import (
     ContextEventError,
@@ -45,7 +48,12 @@ from backend.app.core import (
     websocket_manager,
 )
 from backend.app.extraction import ExtractionResult, knowledge_extraction_service
-from backend.app.models import EventAcceptedResponse, RealtimeEvent, WebSocketMessage
+from backend.app.models import (
+    EventAcceptedResponse,
+    RealtimeEvent,
+    TranscriptSegment,
+    WebSocketMessage,
+)
 
 
 router = APIRouter(prefix="/events", tags=["events"])
@@ -166,6 +174,74 @@ async def receive_event(event: RealtimeEvent) -> EventAcceptedResponse:
         status="accepted",
         session_id=event.session_id,
         event_type=event.event_type,
+        event_count=event_count,
+    )
+
+
+class TranscriptPreviewRequest(BaseModel):
+    """Non-persistent ASR preview used for low-latency partial subtitles."""
+
+    session_id: str
+    payload: dict[str, Any]
+
+
+@router.post(
+    "/transcript-preview",
+    response_model=EventAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def receive_transcript_preview(
+    request: TranscriptPreviewRequest,
+) -> EventAcceptedResponse:
+    """Broadcast a partial ASR subtitle without saving it to classroom history.
+
+    WhisperLive can produce tentative text before a segment is completed. This
+    endpoint lets the frontend display that text as one replaceable preview row,
+    while ``POST /events`` remains the only path that mutates transcript,
+    timeline, notes, graph, and saved history.
+    """
+    try:
+        session_manager.require_recording(request.session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except SessionConflictError:
+        raise HTTPException(status_code=409, detail="Session is not recording")
+
+    try:
+        context = context_manager.get_context(request.session_id)
+    except ContextNotFoundError:
+        raise HTTPException(status_code=404, detail="Context not found")
+
+    payload = {
+        **request.payload,
+        "session_id": request.session_id,
+        "is_final": False,
+    }
+    try:
+        segment = TranscriptSegment.model_validate(payload)
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    event_count = (
+        len(context.transcript)
+        + len(context.visuals)
+        + len(context.knowledge_extractions)
+    )
+    await websocket_manager.broadcast(
+        request.session_id,
+        WebSocketMessage(
+            type="transcript.preview",
+            session_id=request.session_id,
+            data={
+                "payload": segment.model_dump(),
+                "event_count": event_count,
+            },
+        ),
+    )
+    return EventAcceptedResponse(
+        status="accepted",
+        session_id=request.session_id,
+        event_type="transcript.preview",
         event_count=event_count,
     )
 
