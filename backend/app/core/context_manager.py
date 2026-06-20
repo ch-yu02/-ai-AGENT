@@ -177,7 +177,7 @@ class ContextManager:
         context: ClassroomContext,
         event: RealtimeEvent,
     ) -> TimelineItem:
-        """Parse visual payload and append it to visuals and timeline."""
+        """Parse visual payload and upsert it into visuals and timeline."""
         image_id = self._next_id(context, "img", len(context.visuals))
         payload = self._payload_with_defaults(
             event,
@@ -193,7 +193,18 @@ class ContextManager:
         except ValidationError as exc:
             raise ContextEventError(f"Invalid image.capture payload: {exc}") from exc
 
-        context.visuals.append(visual)
+        existing_index = next(
+            (
+                index
+                for index, item in enumerate(context.visuals)
+                if item.image_id == visual.image_id
+            ),
+            None,
+        )
+        if existing_index is None:
+            context.visuals.append(visual)
+        else:
+            context.visuals[existing_index] = visual
 
         title = visual.ocr_text or visual.caption or visual.image_type or "课堂图片"
         item = TimelineItem(
@@ -204,7 +215,18 @@ class ContextManager:
             title=title[:40],
             data=visual.model_dump(),
         )
-        context.timeline.append(item)
+        existing_timeline_index = next(
+            (
+                index
+                for index, timeline_item in enumerate(context.timeline)
+                if timeline_item.type == "visual" and timeline_item.item_id == visual.image_id
+            ),
+            None,
+        )
+        if existing_timeline_index is None:
+            context.timeline.append(item)
+        else:
+            context.timeline[existing_timeline_index] = item
         return item
 
     def _add_knowledge_extraction(

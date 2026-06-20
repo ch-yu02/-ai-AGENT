@@ -47,6 +47,8 @@ export type ImageCapture = {
   status: string;
   ocr_text?: string | null;
   caption?: string | null;
+  visual_text?: string[];
+  key_points?: string[];
 };
 
 // ContextManager 生成的统一时间线条目。

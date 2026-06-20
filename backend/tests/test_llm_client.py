@@ -32,6 +32,24 @@ class CloudLLMClientTest(unittest.TestCase):
         self.assertEqual(settings.model, "llama3.1")
         self.assertEqual(settings.base_url, "http://127.0.0.1:11434/v1")
 
+    def test_kimi_provider_defaults_to_moonshot_api(self) -> None:
+        with patch.dict(
+            "os.environ",
+            {
+                "LLM_PROVIDER": "kimi",
+                "LLM_API_KEY": "test-key",
+                "LLM_MODEL": "",
+                "LLM_BASE_URL": "",
+            },
+            clear=True,
+        ):
+            settings = load_llm_settings()
+
+        self.assertTrue(settings.enabled)
+        self.assertEqual(settings.provider, "kimi")
+        self.assertEqual(settings.model, "kimi-k2.6")
+        self.assertEqual(settings.base_url, "https://api.moonshot.cn/v1")
+
     def test_complete_json_accepts_markdown_json_fence(self) -> None:
         client = CloudLLMClient(self._settings())
 
@@ -83,6 +101,41 @@ class CloudLLMClientTest(unittest.TestCase):
 
         self.assertEqual(response.content, "local ok")
         self.assertNotIn("Authorization", captured_headers)
+
+    def test_kimi_provider_forces_temperature_to_one(self) -> None:
+        client = CloudLLMClient(
+            LLMSettings(
+                provider="kimi",
+                api_key="test-key",
+                model="kimi-k2.6",
+                base_url="https://api.moonshot.cn/v1",
+                timeout_seconds=1,
+                max_retries=0,
+            )
+        )
+        captured_payload: dict[str, object] = {}
+
+        def fake_post(path, payload):  # type: ignore[no-untyped-def]
+            captured_payload.update(payload)
+            return {
+                "model": "kimi-k2.6",
+                "choices": [
+                    {"message": {"content": '{"caption":"ok"}'}},
+                ],
+            }
+
+        client._post_json = fake_post  # type: ignore[method-assign]
+
+        result = client.complete_json_with_image(
+            "system",
+            "user",
+            image_bytes=b"fake-image",
+            media_type="image/jpeg",
+            temperature=0.1,
+        )
+
+        self.assertEqual(result["caption"], "ok")
+        self.assertEqual(captured_payload["temperature"], 1)
 
     def _settings(self) -> LLMSettings:
         return LLMSettings(

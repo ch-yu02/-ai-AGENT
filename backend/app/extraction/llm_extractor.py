@@ -169,6 +169,8 @@ class LLMKnowledgeExtractor(KnowledgeExtractor):
                     "capture_ts": visual.capture_ts,
                     "ocr": visual.ocr_text or "",
                     "caption": visual.caption or "",
+                    "visual_text": "；".join(visual.visual_text),
+                    "key_points": "；".join(visual.key_points),
                 }
                 for visual in visuals
             ],

@@ -510,11 +510,19 @@ WhisperLive 字幕草稿 -> 本地 Qwen structured_notes.md
 `event_type` 为 `knowledge.extraction`，前端继续按现有 `graph_patch`
 逻辑更新图谱。
 
+### POST /agent/visual/analyze
+
+读取一张已经上传并进入课堂上下文的图片，调用云端多模态 LLM 分析画面内容，
+然后回写视觉区并可选更新知识图谱。请求和响应示例见
+[6.2.2 多模态图片分析](#622-多模态图片分析)。
+
+该接口用于当前前端摄像头拍照链路，也可被开发板硬件摄像头服务复用。
+
 ## 5. 实时事件接口
 
 ### POST /events
 
-接收一条课堂实时事件。外部模块主要发送 ASR 和 OCR/VLM 输入；知识抽取由
+接收一条课堂实时事件。外部模块主要发送 ASR 和视觉输入；知识抽取由
 EDU-Mate 项目内部完成，`knowledge.extraction` 主要作为内部事件、mock
 数据和调试格式使用。
 
@@ -611,7 +619,9 @@ payload 字段：
 
 ### 6.2 image.capture
 
-摄像头、屏幕截图、OCR 或 VLM 模块发送的视觉事件。
+摄像头、屏幕截图、OCR 或 VLM 模块发送的视觉事件。当前前端已经内置
+浏览器摄像头预览和拍照入口：点击视觉区的“拍照”按钮或按 `Ctrl+1` 会上传
+图片、发送 `status=processing` 的 `image.capture`，随后调用云端多模态分析。
 
 示例：
 
@@ -628,7 +638,9 @@ payload 字段：
     "image_type": "slide",
     "status": "processed",
     "ocr_text": "X(f)=∫x(t)e^{-j2πft}dt",
-    "caption": "课件展示傅里叶变换公式。"
+    "caption": "课件展示傅里叶变换公式。",
+    "visual_text": ["X(f)=∫x(t)e^{-j2πft}dt"],
+    "key_points": ["傅里叶变换用于把时域信号转换到频域。"]
   }
 }
 ```
@@ -647,6 +659,8 @@ payload 字段：
 | `status` | string | 否 | 处理状态，默认 `processed` |
 | `ocr_text` | string/null | 否 | OCR 文本 |
 | `caption` | string/null | 否 | VLM 图片描述 |
+| `visual_text` | string[] | 否 | 多模态模型直接读到的关键文字/公式片段 |
+| `key_points` | string[] | 否 | 多模态模型总结出的课堂视觉要点 |
 
 ### 6.2.1 图片上传与读取
 
@@ -681,17 +695,57 @@ GET /sessions/{session_id}/images/{image_id}
 
 1. 相机/硬件/OCR/VLM 模块可先上传原始图片 bytes，得到受控的 `local://`
    `image_path`。
-2. 模块发送 `image.capture`，携带 `image_path`、`capture_ts`、`ocr_text` 和/或
-   `caption`。
+2. 模块发送 `image.capture`，至少携带 `image_path` 和 `capture_ts`。内置
+   浏览器拍照会先发送 `status=processing`；外部模块也可以直接携带
+   `ocr_text`、`caption`、`visual_text` 或 `key_points`。
 3. 后端把视觉事件写入 `ClassroomContext.visuals` 和 timeline，并通过
    WebSocket 推给前端视觉/OCR 区。
-4. 内部实时抽取或课后抽取可读取最近的 OCR/caption，与字幕一起生成
-   `knowledge.extraction`；生成的节点/边会通过 `source_visual_ids` 关联图片。
-5. Agent/RAG 检索会把视觉来源作为短 source ref 返回；前端展示 OCR/caption
-   摘录，不会直接展开任意本机路径。
+4. 若需要跳过 OCR 并直接让云端多模态模型读图，调用
+   `POST /agent/visual/analyze`。成功后后端会更新同一个 `image.capture`，
+   并把图片中的知识点作为 `knowledge.extraction` 推送给图谱。
+5. Agent/RAG 检索会把视觉来源作为短 source ref 返回；前端可展示真实图片、
+   OCR/caption、`visual_text` 和 `key_points`。
 
-当前项目还不负责相机采集、OCR 或 VLM 推理本身；这些能力作为外部模块通过
-`PUT /sessions/{session_id}/images/{image_id}` 和 `image.capture` 接入。
+### 6.2.2 多模态图片分析
+
+```text
+POST /agent/visual/analyze
+```
+
+请求体：
+
+```json
+{
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "image_id": "img_001",
+  "force": false
+}
+```
+
+响应：
+
+```json
+{
+  "status": "applied",
+  "session_id": "lec_20260605_010203_ab12cd34",
+  "image_id": "img_001",
+  "caption": "课件展示傅里叶变换公式。",
+  "visual_text": ["X(f)=∫x(t)e^{-j2πft}dt"],
+  "key_points": ["傅里叶变换用于把时域信号转换到频域。"],
+  "extraction_id": "ext_visual_img_001_abc123",
+  "graph_patch_operations": 3,
+  "warnings": []
+}
+```
+
+约束：
+
+- `session_id` 必须是录制中的课堂。
+- 图片必须已经通过 `PUT /sessions/{session_id}/images/{image_id}` 保存，并且
+  已有同名 `image.capture` 进入上下文。
+- 成功时会广播一条更新后的 `image.capture`；如果模型返回实体/关系，还会广播
+  一条 `knowledge.extraction` 和对应 `graph_patch`。
+- 未配置云端多模态 LLM 时返回 `failed`，并把该图片状态更新为 `failed`。
 
 ### 6.3 knowledge.extraction
 

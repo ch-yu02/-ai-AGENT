@@ -5,6 +5,7 @@
 其他兼容 OpenAI Chat Completions 协议的供应商复用同一套代码。
 """
 
+import base64
 import json
 import time
 import urllib.error
@@ -18,7 +19,8 @@ from .settings import LLMSettings
 class CloudLLMError(Exception):
     """云端模型调用失败时抛出的领域错误。
 
-    skills 层会捕获这个错误并回退规则版实现，避免模型故障影响课堂数据保存。
+    调用方会按场景转换为 warning、failed 状态或来源约束的回退回答，避免模型
+    故障写入无效课堂数据。
     """
 
 
@@ -92,16 +94,65 @@ class CloudLLMClient:
         )
         return _parse_json_object(response.content)
 
-    def _request_payload(
+    def complete_json_with_image(
         self,
         system_prompt: str,
         user_prompt: str,
+        *,
+        image_bytes: bytes,
+        media_type: str,
+        temperature: float = 0.1,
+    ) -> dict[str, Any]:
+        """请求支持视觉输入的 OpenAI-compatible 模型返回 JSON object."""
+        data_url = _image_data_url(image_bytes, media_type)
+        user_content = [
+            {"type": "text", "text": user_prompt},
+            {"type": "image_url", "image_url": {"url": data_url}},
+        ]
+        response = self.complete_with_user_content(
+            system_prompt,
+            user_content,
+            temperature=temperature,
+        )
+        return _parse_json_object(response.content)
+
+    def complete_with_user_content(
+        self,
+        system_prompt: str,
+        user_content: str | list[dict[str, Any]],
+        *,
+        temperature: float = 0.2,
+    ) -> CloudLLMResponse:
+        """请求模型，允许 user message content 使用多模态 content parts."""
+        last_error: Exception | None = None
+        for attempt in range(self.settings.max_retries + 1):
+            try:
+                payload = self._request_payload(system_prompt, user_content, temperature)
+                response_payload = self._post_json("/chat/completions", payload)
+                content = self._extract_message_content(response_payload)
+                return CloudLLMResponse(
+                    content=content,
+                    model=str(response_payload.get("model", self.settings.model)),
+                    provider=self.settings.provider,
+                )
+            except (CloudLLMError, OSError, urllib.error.URLError) as exc:
+                last_error = exc
+                if attempt >= self.settings.max_retries:
+                    break
+                time.sleep(0.2 * (attempt + 1))
+
+        raise CloudLLMError(f"Cloud LLM request failed: {last_error}") from last_error
+
+    def _request_payload(
+        self,
+        system_prompt: str,
+        user_prompt: str | list[dict[str, Any]],
         temperature: float,
     ) -> dict[str, Any]:
         """构造 OpenAI-compatible Chat Completions 请求体。"""
         return {
             "model": self.settings.model,
-            "temperature": temperature,
+            "temperature": _normalized_temperature(self.settings, temperature),
             "messages": [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
@@ -178,9 +229,37 @@ def _parse_json_object(content: str) -> dict[str, Any]:
     return data
 
 
+def _normalized_temperature(settings: LLMSettings, temperature: float) -> float:
+    """Adjust provider-specific temperature constraints."""
+    if _is_kimi_provider(settings):
+        return 1
+    return temperature
+
+
+def _is_kimi_provider(settings: LLMSettings) -> bool:
+    provider = settings.provider.lower()
+    base_url = settings.base_url.lower()
+    return (
+        provider in {"kimi", "moonshot"}
+        or "moonshot." in base_url
+        or "kimi." in base_url
+    )
+
+
 def _strip_code_fence(content: str) -> str:
     """去掉常见 Markdown JSON code fence。"""
     lines = content.splitlines()
     if len(lines) >= 3 and lines[0].startswith("```") and lines[-1].startswith("```"):
         return "\n".join(lines[1:-1]).strip()
     return content
+
+
+def _image_data_url(image_bytes: bytes, media_type: str) -> str:
+    """Build a data URL for OpenAI-compatible multimodal chat messages."""
+    normalized_type = media_type.strip().lower() or "image/jpeg"
+    if normalized_type not in {"image/jpeg", "image/jpg", "image/png", "image/webp"}:
+        normalized_type = "image/jpeg"
+    if normalized_type == "image/jpg":
+        normalized_type = "image/jpeg"
+    encoded = base64.b64encode(image_bytes).decode("ascii")
+    return f"data:{normalized_type};base64,{encoded}"

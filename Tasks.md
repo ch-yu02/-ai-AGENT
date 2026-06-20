@@ -29,6 +29,9 @@
 - [x] Course aggregation, merged course knowledge tree, and cross-classroom review QA APIs.
 - [x] Cross-classroom UI exposes search/review mode and course quick filters.
 - [x] Image upload/read endpoints.
+- [x] Browser camera preview and photo capture, with button and Ctrl+1 shortcut.
+- [x] Cloud multimodal image analysis writes visual text/key points into the
+  existing visual panel, knowledge graph, and RAG source flow.
 - [x] Knowledge graph graph-view supports pan/zoom/fullscreen, complete multiline labels,
   and relationship-cluster layout.
 
@@ -40,6 +43,9 @@
 - [ ] Confirm cloud graph update cadence and timeout settings.
 - [ ] Verify frontend can attach to script-created recording sessions reliably on the target device.
 - [ ] Add a concise full-chain manual test record with observed timings.
+- [ ] Validate browser camera permission/device behavior on the target board.
+- [ ] Decide whether hardware camera capture should call the same image upload +
+  visual analysis endpoint or provide its own capture service wrapper.
 
 ## P1: Agent And Knowledge Quality
 

@@ -113,6 +113,10 @@ class ImageCapture(BaseModel):
     """OCR 提取的文字内容（由下游处理模块填充）。"""
     caption: str | None = None
     """图像描述（由多模态模型生成，下游处理模块填充）。"""
+    visual_text: list[str] = Field(default_factory=list)
+    """多模态模型从图片中读到的关键文字/公式片段。"""
+    key_points: list[str] = Field(default_factory=list)
+    """多模态模型总结出的课堂要点。"""
 
 
 # ── 知识提取子模型 ──────────────────────────────────────────────

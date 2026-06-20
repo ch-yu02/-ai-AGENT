@@ -72,6 +72,8 @@ def _default_model(provider: str) -> str:
         return "gpt-4o-mini"
     if provider == "deepseek":
         return "deepseek-v4-flash"
+    if provider in {"kimi", "moonshot"}:
+        return "kimi-k2.6"
     if provider == "local":
         return "llama3.1"
     return "chat"
@@ -83,6 +85,8 @@ def _default_base_url(provider: str) -> str:
         return "https://api.openai.com/v1"
     if provider == "deepseek":
         return "https://api.deepseek.com"
+    if provider in {"kimi", "moonshot"}:
+        return "https://api.moonshot.cn/v1"
     if provider == "local":
         return "http://127.0.0.1:11434/v1"
     return "https://api.deepseek.com"

@@ -49,6 +49,44 @@ class ContextManagerTest(unittest.TestCase):
         self.assertEqual(context.visuals[0].ocr_text, "傅里叶变换")
         self.assertEqual(context.timeline[0].title, "傅里叶变换")
 
+    def test_handle_image_capture_replaces_same_image_id(self) -> None:
+        image_id = "img_same_001"
+        self.manager.handle_event(
+            RealtimeEvent(
+                session_id=self.session_id,
+                event_type="image.capture",
+                payload={
+                    "image_id": image_id,
+                    "capture_ts": 20.0,
+                    "image_path": "local://slide.jpg",
+                    "caption": "图片处理中",
+                    "status": "processing",
+                },
+            )
+        )
+        self.manager.handle_event(
+            RealtimeEvent(
+                session_id=self.session_id,
+                event_type="image.capture",
+                payload={
+                    "image_id": image_id,
+                    "capture_ts": 20.0,
+                    "image_path": "local://slide.jpg",
+                    "caption": "图片中展示了傅里叶变换。",
+                    "status": "processed",
+                    "visual_text": ["傅里叶变换"],
+                    "key_points": ["频域分析是核心用途。"],
+                },
+            )
+        )
+
+        context = self.manager.get_context(self.session_id)
+        self.assertEqual(len(context.visuals), 1)
+        self.assertEqual(len(context.timeline), 1)
+        self.assertEqual(context.visuals[0].status, "processed")
+        self.assertEqual(context.visuals[0].visual_text, ["傅里叶变换"])
+        self.assertEqual(context.timeline[0].data["key_points"], ["频域分析是核心用途。"])
+
     def test_handle_knowledge_extraction_updates_extractions(self) -> None:
         self.manager.handle_event(
             RealtimeEvent(

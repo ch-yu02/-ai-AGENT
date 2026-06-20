@@ -65,12 +65,18 @@ WhisperLive ASR draft
 Classroom images:
 
 ```text
-PUT /sessions/{session_id}/images/{image_id}   (optional raw bytes upload)
-POST /events(image.capture with image_path/OCR/caption)
+Frontend camera preview + capture button / Ctrl+1
+-> PUT /sessions/{session_id}/images/{image_id}
+-> POST /events(image.capture status=processing)
 -> ContextManager visuals + timeline
--> optional internal LLM extraction with visual text
--> frontend visual/OCR panel and graph source refs
+-> POST /agent/visual/analyze
+-> cloud multimodal LLM returns caption/visual_text/key_points and graph items
+-> image.capture + knowledge.extraction WebSocket updates
 ```
+
+External camera or screenshot modules can still use the same image upload and
+`image.capture` event contract. OCR is optional; the built-in classroom camera
+path sends the saved image directly to a multimodal cloud LLM.
 
 History and Agent:
 

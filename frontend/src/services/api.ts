@@ -1,4 +1,5 @@
 import type {
+  ImageCapture,
   LectureSession,
   SessionDeleteResponse,
   SessionHistoryDetail,
@@ -25,6 +26,37 @@ export type StartSessionPayload = {
 export type UpdateSessionPayload = {
   title?: string;
   course?: string | null;
+};
+
+export type UploadImageResponse = {
+  session_id: string;
+  image_id: string;
+  image_path: string;
+};
+
+export type RealtimeEventPayload = {
+  session_id: string;
+  event_type: "transcript.segment" | "image.capture" | "knowledge.extraction";
+  payload: Record<string, unknown>;
+};
+
+export type EventAcceptedResponse = {
+  status: "accepted";
+  session_id: string;
+  event_type: string;
+  event_count: number;
+};
+
+export type VisualAnalysisResponse = {
+  status: "applied" | "skipped" | "failed";
+  session_id: string;
+  image_id: string;
+  caption?: string | null;
+  visual_text: string[];
+  key_points: string[];
+  extraction_id?: string | null;
+  graph_patch_operations: number;
+  warnings: string[];
 };
 
 // 统一 API 错误类型。
@@ -157,4 +189,54 @@ export function deleteHistorySession(sessionId: string): Promise<SessionDeleteRe
   return requestJson<SessionDeleteResponse>(`/sessions/${sessionId}/history`, {
     method: "DELETE",
   });
+}
+
+export async function uploadSessionImage(
+  sessionId: string,
+  imageId: string,
+  image: Blob,
+): Promise<UploadImageResponse> {
+  const response = await fetch(`${API_BASE_URL}/sessions/${sessionId}/images/${imageId}`, {
+    method: "PUT",
+    headers: {
+      "Content-Type": image.type || "image/jpeg",
+    },
+    body: image,
+  });
+
+  if (!response.ok) {
+    throw new ApiError(response.status, await readErrorDetail(response));
+  }
+
+  return response.json() as Promise<UploadImageResponse>;
+}
+
+export function sendRealtimeEvent(
+  event: RealtimeEventPayload,
+): Promise<EventAcceptedResponse> {
+  return requestJson<EventAcceptedResponse>("/events", {
+    method: "POST",
+    body: JSON.stringify(event),
+  });
+}
+
+export function analyzeVisualImage(
+  sessionId: string,
+  imageId: string,
+): Promise<VisualAnalysisResponse> {
+  return requestJson<VisualAnalysisResponse>("/agent/visual/analyze", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: sessionId,
+      image_id: imageId,
+    }),
+  });
+}
+
+export function sessionImageUrl(visual: ImageCapture, sessionId?: string): string {
+  const ownerSessionId = visual.session_id || sessionId;
+  if (!ownerSessionId) {
+    return "";
+  }
+  return `${API_BASE_URL}/sessions/${ownerSessionId}/images/${visual.image_id}`;
 }

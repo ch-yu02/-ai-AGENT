@@ -59,15 +59,18 @@ class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
         knowledge_graph_manager.start_session(self.session_id)
         self.socket = FakeWebSocket()
         self.original_agent = agent_api.markdown_knowledge_tree_agent
+        self.original_to_thread = agent_api.asyncio.to_thread
         agent_api.markdown_knowledge_tree_agent = MarkdownKnowledgeTreeAgent(
             FakeJsonLLMClient()
         )
+        agent_api.asyncio.to_thread = _direct_to_thread
 
     async def asyncSetUp(self) -> None:
         await websocket_manager.connect(self.session_id, self.socket)
 
     def tearDown(self) -> None:
         agent_api.markdown_knowledge_tree_agent = self.original_agent
+        agent_api.asyncio.to_thread = self.original_to_thread
         session_manager.clear()
         context_manager.clear()
         knowledge_graph_manager.clear()
@@ -115,6 +118,10 @@ class NotesKnowledgeTreeApiTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(event_messages), 1)
         self.assertEqual(event_messages[0]["data"]["event_type"], "knowledge.extraction")
         self.assertIsNotNone(event_messages[0]["data"]["graph_patch"])
+
+
+async def _direct_to_thread(func, /, *args, **kwargs):  # type: ignore[no-untyped-def]
+    return func(*args, **kwargs)
 
 
 if __name__ == "__main__":

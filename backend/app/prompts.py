@@ -212,11 +212,75 @@ def llm_knowledge_extractor_user_prompt(
                 f"id={visual.get('id')}; "
                 f"ts={_float(visual.get('capture_ts')):.2f}; "
                 f"ocr={visual.get('ocr') or ''}; "
-                f"caption={visual.get('caption') or ''}"
+                f"caption={visual.get('caption') or ''}; "
+                f"visual_text={visual.get('visual_text') or ''}; "
+                f"key_points={visual.get('key_points') or ''}"
             )
     else:
         lines.append("- none")
     return "\n".join(lines)
+
+
+def visual_analysis_system_prompt() -> str:
+    """System prompt for multimodal classroom image analysis."""
+    return (
+        "You are EDU-Mate's multimodal classroom visual analyst. "
+        "Analyze the provided classroom camera snapshot using only the image "
+        "and the supplied classroom context. Do not invent text that is not "
+        "visible or supported. Return only a JSON object with this schema: "
+        "{caption:string, visual_text:string[], key_points:string[], "
+        "entities:[{entity_id?:string,name:string,type:string,description?:string}], "
+        "relations:[{source:string,target:string,relation:string}], importance?:number}. "
+        "Use the main teaching language of the context/image for caption, "
+        "key_points, entity names, and descriptions. visual_text should contain "
+        "short visible text snippets or formulas from the image; if no readable "
+        "text exists, return an empty array. Extract only concrete course "
+        "concepts, formulas, diagrams, terms, named methods, events, or people. "
+        "Do not create generic placeholders such as 课程, 课堂, 内容, 图片, 图像, "
+        "知识点, 概念, 重点, 方法, ent_1, or e1. Relations must use snake_case "
+        "labels such as contains, shows, defines, part_of, related_to, "
+        "example_of, contrasts_with, derives_from."
+    )
+
+
+def visual_analysis_user_prompt(
+    *,
+    session_id: str,
+    image_id: str,
+    capture_ts: float,
+    recent_transcript: Sequence[Mapping[str, object]],
+    existing_nodes: Sequence[str],
+    structured_notes_excerpt: str | None = None,
+) -> str:
+    """User prompt for multimodal classroom image analysis."""
+    transcript_lines = [
+        f"- id={segment.get('segment_id') or segment.get('id')}; "
+        f"ts={_float(segment.get('start_ts')):.2f}-{_float(segment.get('end_ts')):.2f}; "
+        f"text={segment.get('text') or ''}"
+        for segment in recent_transcript
+    ] or ["- none"]
+    node_lines = [f"- {name}" for name in existing_nodes[:80]] or ["- none"]
+    return "\n".join(
+        [
+            f"session_id: {session_id}",
+            f"image_id: {image_id}",
+            f"capture_ts: {capture_ts:.2f}",
+            "",
+            "recent_transcript_context:",
+            *transcript_lines,
+            "",
+            "existing_knowledge_nodes:",
+            *node_lines,
+            "",
+            "structured_notes_excerpt:",
+            structured_notes_excerpt or "none",
+            "",
+            "Analyze the attached classroom image. Use recent_transcript_context "
+            "only to disambiguate what is being taught; do not add unrelated facts. "
+            "If the image is not educationally useful, return empty entities and "
+            "relations with a concise caption explaining what is visible.",
+        ]
+    )
 
 
 def markdown_knowledge_tree_system_prompt() -> str:

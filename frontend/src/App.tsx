@@ -487,7 +487,12 @@ function App() {
             focusedSource={focusedSource}
             transcript={state.transcript}
           />
-          <VisualOcrPanel focusedSource={focusedSource} visuals={state.visuals} />
+          <VisualOcrPanel
+            focusedSource={focusedSource}
+            session={state.session}
+            visuals={state.visuals}
+            onStatusMessage={setStatusMessage}
+          />
           <KnowledgeGraphPanel
             focusedSource={focusedSource}
             graph={state.graph}

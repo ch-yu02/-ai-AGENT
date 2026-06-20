@@ -269,7 +269,13 @@ function sourceRefText(
   }
   if (ref.type === "visual") {
     const visual = visuals.find((item) => item.image_id === ref.id);
-    return visual?.ocr_text || visual?.caption || "视觉来源未加载";
+    return (
+      visual?.ocr_text
+      || visual?.caption
+      || visual?.visual_text?.join("；")
+      || visual?.key_points?.join("；")
+      || "视觉来源未加载"
+    );
   }
   return "内部抽取事件";
 }
@@ -375,11 +381,12 @@ function KnowledgeGraphCanvas({ focusedSource, graph, nodeById }: KnowledgeGraph
     if (!canvas || !svg) {
       return;
     }
+    const activeSvg = svg;
 
     function handleNativeWheel(event: WheelEvent) {
       event.preventDefault();
       event.stopPropagation();
-      const point = svgPointFromClient(svg, event.clientX, event.clientY);
+      const point = svgPointFromClient(activeSvg, event.clientX, event.clientY);
       const factor = event.deltaY < 0 ? 1.12 : 1 / 1.12;
       zoomByFactorAtPoint(factor, point);
     }

@@ -55,6 +55,7 @@ FRONTEND_PORT="${FRONTEND_PORT:-5173}"
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 PIP_BIN="$ROOT_DIR/.venv/bin/pip"
 UVICORN_BIN="$ROOT_DIR/.venv/bin/uvicorn"
+export PATH="$ROOT_DIR/.venv/bin:$PATH"
 OPENVINO_ROOT="${OPENVINO_ROOT:-/home/edu-mate_user/openvino}"
 OPENVINO_PYTHON="${OPENVINO_PYTHON:-$OPENVINO_ROOT/venv/bin/python}"
 
@@ -139,7 +140,11 @@ require_openvino_python() {
 run_backend() {
   require_backend_venv
   cd "$ROOT_DIR"
-  exec "$UVICORN_BIN" backend.app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+  exec "$UVICORN_BIN" backend.app.main:app \
+    --reload \
+    --reload-dir "$ROOT_DIR/backend" \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT"
 }
 
 run_frontend() {
@@ -157,7 +162,11 @@ run_dev() {
   echo "Press Ctrl+C to stop both servers."
 
   cd "$ROOT_DIR"
-  "$UVICORN_BIN" backend.app.main:app --reload --host "$BACKEND_HOST" --port "$BACKEND_PORT" &
+  "$UVICORN_BIN" backend.app.main:app \
+    --reload \
+    --reload-dir "$ROOT_DIR/backend" \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT" &
   backend_pid=$!
 
   cd "$ROOT_DIR/frontend"

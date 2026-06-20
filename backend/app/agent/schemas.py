@@ -37,6 +37,9 @@ NotesUpdateStatus = Literal["streaming", "final"]
 NotesKnowledgeTreeStatus = Literal["applied", "skipped", "failed"]
 """从结构化笔记更新知识树后的处理状态。"""
 
+VisualAnalysisStatus = Literal["applied", "skipped", "failed"]
+"""课堂图片多模态分析后的处理状态。"""
+
 
 class AgentChatRequest(BaseModel):
     """``POST /agent/chat`` 的请求体。
@@ -269,6 +272,31 @@ class NotesKnowledgeTreeUpdateResponse(BaseModel):
     """非致命提示和云端抽取错误摘要。"""
 
 
+class VisualAnalysisRequest(BaseModel):
+    """``POST /agent/visual/analyze`` 的请求体。"""
+
+    session_id: str
+    """录制中的课堂 ID。"""
+    image_id: str
+    """已上传并已通过 image.capture 进入课堂上下文的图片 ID。"""
+    force: bool = False
+    """是否强制重新分析已经 processed 的图片。"""
+
+
+class VisualAnalysisResponse(BaseModel):
+    """课堂图片多模态分析响应。"""
+
+    status: VisualAnalysisStatus
+    session_id: str
+    image_id: str
+    caption: str | None = None
+    visual_text: list[str] = Field(default_factory=list)
+    key_points: list[str] = Field(default_factory=list)
+    extraction_id: str | None = None
+    graph_patch_operations: int = 0
+    warnings: list[str] = Field(default_factory=list)
+
+
 __all__ = [
     "AgentArtifact",
     "AgentAnswerMode",
@@ -289,4 +317,7 @@ __all__ = [
     "NotesSourceSegment",
     "NotesUpdateStatus",
     "ResolvedAgentIntent",
+    "VisualAnalysisRequest",
+    "VisualAnalysisResponse",
+    "VisualAnalysisStatus",
 ]

@@ -153,9 +153,9 @@ def _structured_notes_rag_text(markdown: str) -> str:
 def _visual_documents(context: ClassroomContext) -> list[RagDocument]:
     """把课堂视觉内容转换成检索文档。
 
-    视觉事件可能包含 OCR、caption，也可能只有图片路径或类型。检索正文优先
-    使用 OCR 和 caption；如果两者都没有，再退回 image_type / image_path，
-    保证每个视觉事件至少能形成一个可追溯文档。
+    视觉事件可能包含 OCR、caption、多模态视觉文字和图片要点，也可能只有
+    图片路径或类型。检索正文优先使用模型分析结果；如果没有，再退回
+    image_type / image_path，保证每个视觉事件至少能形成一个可追溯文档。
     """
     documents: list[RagDocument] = []
     for visual in context.visuals:
@@ -164,6 +164,10 @@ def _visual_documents(context: ClassroomContext) -> list[RagDocument]:
             parts.append(f"OCR: {visual.ocr_text}")
         if visual.caption:
             parts.append(f"Caption: {visual.caption}")
+        if visual.visual_text:
+            parts.append("Visual text: " + "；".join(visual.visual_text))
+        if visual.key_points:
+            parts.append("Key points: " + "；".join(visual.key_points))
         if len(parts) == 1:
             parts.append(visual.image_type or visual.image_path)
 
@@ -177,6 +181,8 @@ def _visual_documents(context: ClassroomContext) -> list[RagDocument]:
                 extra={
                     "image_path": visual.image_path,
                     "image_type": visual.image_type,
+                    "visual_text": visual.visual_text,
+                    "key_points": visual.key_points,
                 },
             )
         )

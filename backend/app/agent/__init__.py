@@ -27,7 +27,10 @@ from .schemas import (
     NotesKnowledgeTreeUpdateRequest,
     NotesKnowledgeTreeUpdateResponse,
     NotesSourceSegment,
+    VisualAnalysisRequest,
+    VisualAnalysisResponse,
 )
+from .visual_analysis import ClassroomVisualAnalysisAgent, visual_analysis_agent
 
 
 classroom_agent = ClassroomAgent(
@@ -69,7 +72,11 @@ __all__ = [
     "NotesKnowledgeTreeUpdateRequest",
     "NotesKnowledgeTreeUpdateResponse",
     "NotesSourceSegment",
+    "ClassroomVisualAnalysisAgent",
     "classroom_agent",
     "global_search_service",
     "markdown_knowledge_tree_agent",
+    "visual_analysis_agent",
+    "VisualAnalysisRequest",
+    "VisualAnalysisResponse",
 ]

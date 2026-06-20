@@ -330,7 +330,7 @@ button:disabled {
     "agent agent"
     "search search";
   grid-template-rows:
-    minmax(320px, 38vh)
+    minmax(860px, 82vh)
     740px
     minmax(420px, 48vh)
     minmax(520px, 60vh)
@@ -355,6 +355,7 @@ button:disabled {
 
 .visual-panel {
   grid-area: visual;
+  min-height: 860px;
 }
 
 .graph-panel {
@@ -415,6 +416,140 @@ button:disabled {
   min-height: 0;
   overflow: auto;
   padding: 14px 18px 18px;
+}
+
+.camera-capture-panel {
+  border-bottom: 1px solid #eef2f6;
+  display: grid;
+  gap: 12px;
+  padding: 16px 18px;
+}
+
+.camera-display-frame {
+  align-items: center;
+  aspect-ratio: 16 / 9;
+  background: #101828;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  display: flex;
+  height: clamp(280px, 34vh, 430px);
+  justify-content: center;
+  overflow: hidden;
+  position: relative;
+  width: 100%;
+}
+
+.camera-display-frame video,
+.camera-selected-image {
+  display: block;
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+.camera-display-frame video.hidden-camera-feed {
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+}
+
+.camera-selected-image {
+  background: #101828;
+}
+
+.image-load-fallback {
+  align-items: center;
+  color: #637083;
+  display: flex;
+  font-size: 13px;
+  justify-content: center;
+  line-height: 1.4;
+  text-align: center;
+}
+
+.camera-controls {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.camera-controls button {
+  background: #eef3f9;
+  color: #172033;
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+.camera-controls button:hover:not(:disabled) {
+  background: #dfe8f4;
+}
+
+.camera-controls span {
+  color: #637083;
+  font-size: 12px;
+}
+
+.camera-image-picker {
+  display: flex;
+  gap: 8px;
+  min-height: 82px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.camera-image-picker button {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  color: #3b4758;
+  display: grid;
+  flex: 0 0 86px;
+  font-size: 11px;
+  gap: 4px;
+  height: 74px;
+  justify-items: center;
+  line-height: 1.15;
+  min-width: 86px;
+  min-height: 74px;
+  overflow: hidden;
+  padding: 5px;
+}
+
+.camera-image-picker button.active {
+  background: #edf6ff;
+  border-color: #1f6feb;
+  color: #1255b0;
+}
+
+.camera-picker-image {
+  aspect-ratio: 16 / 9;
+  background: #e5ebf3;
+  border-radius: 5px;
+  object-fit: cover;
+  width: 74px;
+}
+
+.camera-image-picker span {
+  color: inherit;
+  display: block;
+  font-size: 11px;
+  line-height: 1.15;
+}
+
+.camera-image-picker small {
+  color: #1f6feb;
+  font-size: 10px;
+  line-height: 1;
+}
+
+.camera-error {
+  color: #b42318;
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0;
 }
 
 .transcript-item,
@@ -548,6 +683,88 @@ button:disabled {
 .visual-block > span {
   color: #1f6feb;
   font-weight: 700;
+}
+
+.visual-block ul {
+  line-height: 1.6;
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+
+.visual-photo {
+  aspect-ratio: 16 / 9;
+  background: #f4f7fb;
+  border: 1px solid #e3e9f1;
+  border-radius: 8px;
+  display: block;
+  margin-top: 12px;
+  object-fit: contain;
+  width: 100%;
+}
+
+.visual-analysis-detail {
+  flex: 1;
+  min-height: 300px;
+  overflow: auto;
+  padding: 16px 18px 18px;
+}
+
+.visual-analysis-empty {
+  display: flex;
+}
+
+.visual-analysis-empty .empty-state {
+  min-height: 300px;
+}
+
+.visual-detail-header {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.visual-detail-header > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.visual-detail-header strong {
+  line-height: 1.35;
+}
+
+.visual-detail-header span {
+  color: #637083;
+  font-size: 12px;
+}
+
+.visual-analysis-status {
+  background: #edf6ff;
+  border: 1px solid #b9d7ff;
+  border-radius: 999px;
+  color: #1255b0;
+  flex: 0 0 auto;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 9px;
+}
+
+.visual-detail-meta {
+  margin-top: 12px;
+}
+
+.visual-analysis-placeholder {
+  align-items: center;
+  background: #f8fafc;
+  border: 1px dashed #d8e0ea;
+  border-radius: 8px;
+  color: #637083;
+  display: flex;
+  line-height: 1.6;
+  margin-top: 12px;
+  min-height: 110px;
+  padding: 18px;
 }
 
 .image-path {
@@ -1323,7 +1540,7 @@ button:disabled {
       "search";
     grid-template-rows:
       minmax(320px, 48vh)
-      minmax(260px, 38vh)
+      minmax(520px, auto)
       600px
       minmax(420px, 52vh)
       minmax(520px, 62vh)
@@ -1331,6 +1548,10 @@ button:disabled {
   }
 
   .graph-panel {
+    min-height: 520px;
+  }
+
+  .visual-panel {
     min-height: 520px;
   }
 

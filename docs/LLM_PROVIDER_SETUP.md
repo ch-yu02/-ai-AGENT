@@ -1,9 +1,9 @@
 # EDU-Mate LLM Provider Setup
 
 EDU-Mate uses one backend-only OpenAI-compatible LLM client for Agent skills,
-internal LLM-backed knowledge extraction, and the structured-notes knowledge
-tree agent. API keys must stay on the backend; never expose them in the
-frontend bundle or browser requests.
+internal LLM-backed knowledge extraction, the structured-notes knowledge tree
+agent, and optional classroom image analysis. API keys must stay on the backend;
+never expose them in the frontend bundle or browser requests.
 
 This cloud/local OpenAI-compatible provider is separate from the local OpenVINO
 Qwen used by `scripts/dev.sh whisperlive-md`. Local Qwen maintains
@@ -36,6 +36,12 @@ The same provider is used by:
 - Internal realtime/end-of-session knowledge extraction.
 - `/agent/knowledge-tree/update-from-notes`, which turns Qwen structured notes
   into knowledge-tree updates and final session metadata.
+- `/agent/visual/analyze`, which sends a saved classroom photo to a multimodal
+  model and turns the result into visual notes plus optional graph updates.
+
+For image analysis, the configured model must support OpenAI-compatible
+multimodal chat content. A text-only model can still power QA and graph
+extraction, but `/agent/visual/analyze` will fail with a warning.
 
 ## Vector RAG / LlamaIndex
 
@@ -116,6 +122,22 @@ Legacy model names such as `deepseek-chat` and `deepseek-reasoner` are not used
 by the current project examples. Prefer the V4 names above for new local
 configuration unless your provider account documents a different mapping.
 
+## Kimi / Moonshot
+
+Kimi uses an OpenAI-compatible Chat Completions API. The Chinese API endpoint is:
+
+```bash
+LLM_PROVIDER=kimi
+LLM_API_KEY=sk-...
+LLM_MODEL=kimi-k2.6
+LLM_BASE_URL=https://api.moonshot.cn/v1
+```
+
+`kimi-k2.6` supports multimodal `image_url` input, so it can power
+`/agent/visual/analyze`. Kimi currently rejects non-`1` temperature values for
+this model; EDU-Mate normalizes Kimi/Moonshot requests to `temperature=1`
+automatically.
+
 ## OpenAI
 
 ```bash
@@ -153,8 +175,10 @@ Then run a classroom flow:
 4. For `/events` extraction, check WebSocket `event.received.data.knowledge_extraction`.
 5. For notes-driven extraction, check the response from
    `/agent/knowledge-tree/update-from-notes`.
-6. Check the following internal `knowledge.extraction` message for `graph_patch`.
-7. On final notes snapshots, check `session.updated` if the cloud model returned
+6. For image analysis, upload/capture an image and call `/agent/visual/analyze`;
+   check the updated `image.capture` and optional `knowledge.extraction`.
+7. Check the following internal `knowledge.extraction` message for `graph_patch`.
+8. On final notes snapshots, check `session.updated` if the cloud model returned
    `session_title` or `course`.
 
 ## Failure Behavior
@@ -162,6 +186,8 @@ Then run a classroom flow:
 - Missing provider config returns `ExtractionError`.
 - Provider timeout or HTTP failure returns `ExtractionError`.
 - Invalid JSON/schema output returns `ExtractionError`.
+- Multimodal image analysis without a vision-capable model returns
+  `status="failed"` and marks the image as failed.
 - EDU-Mate does not fall back to the legacy rule extractor.
 - Invalid extraction output is not written to the graph.
 - Notes-agent failures return `status="failed"` and warnings; subtitles and

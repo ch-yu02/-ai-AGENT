@@ -315,8 +315,10 @@ curl -X POST http://127.0.0.1:8000/events \
 
 ### 5.1 用途
 
-视觉模块在捕获到课堂画面、课件截图、白板图像或完成 OCR/VLM 处理后，
-发送一条 `image.capture`。
+视觉模块在捕获到课堂画面、课件截图或白板图像后，发送一条
+`image.capture`。如果外部模块已经完成 OCR/VLM，也可以同时携带结果。
+当前前端视觉区已经内置浏览器摄像头预览和拍照：点击拍照按钮或按 `Ctrl+1`
+会保存图片并触发后端云端多模态分析。
 
 后端会把它写入：
 
@@ -371,11 +373,12 @@ GET /sessions/{session_id}/images/{image_id}
 
 当前边界：
 
-- EDU-Mate 后端不直接采集摄像头画面，也不在本仓库内执行 OCR/VLM 推理。
-- 相机、截图、OCR、VLM 属于外部采集/算法模块；它们通过图片上传接口和
-  `image.capture` 把结果同步进课堂。
-- `image.capture` 里的 `ocr_text` / `caption` 会进入前端视觉区、历史文件、
-  Agent/RAG 来源，以及内部知识抽取提示词。
+- 浏览器前端可通过 `getUserMedia` 做实时预览和拍照；开发板硬件摄像头也可以
+  继续作为外部采集模块接入同一上传协议。
+- OCR 是可选步骤。当前计划中的主链路是把保存后的图片交给云端多模态 LLM，
+  直接得到 `caption`、`visual_text`、`key_points` 和可选图谱实体/关系。
+- `image.capture` 里的 `ocr_text` / `caption` / `visual_text` / `key_points`
+  会进入前端视觉区、历史文件、Agent/RAG 来源，以及内部知识抽取提示词。
 - 图谱节点/边如果来自图片，会通过 `source_visual_ids` 关联已有 `image_id`。
 
 ### 5.3 最小可用 payload
@@ -402,7 +405,9 @@ GET /sessions/{session_id}/images/{image_id}
   "image_type": "slide",
   "status": "processed",
   "ocr_text": "X(f)=∫x(t)e^{-j2πft}dt",
-  "caption": "课件展示傅里叶变换公式，以及时域到频域的转换箭头。"
+  "caption": "课件展示傅里叶变换公式，以及时域到频域的转换箭头。",
+  "visual_text": ["X(f)=∫x(t)e^{-j2πft}dt"],
+  "key_points": ["傅里叶变换用于把时域信号转换到频域。"]
 }
 ```
 
@@ -420,6 +425,8 @@ GET /sessions/{session_id}/images/{image_id}
 | `status` | string | 否 | `processed` / `processing` / `failed` | 处理状态 |
 | `ocr_text` | string/null | 否 | 可为空 | OCR 提取文本 |
 | `caption` | string/null | 否 | 可为空 | VLM 图像描述 |
+| `visual_text` | string[] | 否 | 可为空 | 多模态模型从图片读到的关键文字/公式 |
+| `key_points` | string[] | 否 | 可为空 | 多模态模型总结出的视觉课堂要点 |
 
 ### 5.6 status 约定
 
@@ -463,12 +470,40 @@ curl -X POST http://127.0.0.1:8000/events \
   }'
 ```
 
+### 5.8 云端多模态分析
+
+如果只完成了拍照保存，调用：
+
+```text
+POST /agent/visual/analyze
+```
+
+请求体：
+
+```json
+{
+  "session_id": "lec_20260613_010203_ab12cd34",
+  "image_id": "img_001",
+  "force": false
+}
+```
+
+后端会读取已保存图片，调用配置的云端多模态 LLM，并回写：
+
+- 更新后的 `image.capture`：`status=processed`，包含 `caption`、
+  `visual_text`、`key_points`。
+- 可选的 `knowledge.extraction`：图片中提取到的概念和关系，来源为
+  `source_visual_ids=["img_001"]`。
+
+若未配置多模态云端 LLM 或调用失败，后端会把该图片状态更新为 `failed`，
+并在响应 `warnings` 中说明原因。
+
 ## 6. 内部知识抽取输出：knowledge.extraction
 
 ### 6.1 用途
 
 知识抽取由 EDU-Mate 项目内部完成。内部知识抽取模块从 ASR 文本和
-OCR/VLM 视觉结果中提取实体与关系后，生成 `knowledge.extraction`。
+视觉分析结果中提取实体与关系后，生成 `knowledge.extraction`。
 
 外部算法组、硬件组不需要发送该事件。该格式主要用于：
 
