@@ -21,8 +21,8 @@ import type {
 // 知识图谱面板。
 //
 // 后端 KnowledgeGraphManager 通过 graph_patch.operations 推送增量变更。
-// MVP 先提供两种显示：
-// 1. 列表视图：稳定、信息密度高，适合联调时确认节点和边是否正确进入前端。
+// 面板提供两种显示：
+// 1. 列表视图：稳定、信息密度高，适合快速确认节点和边是否正确进入前端。
 // 2. 图形视图：用轻量 SVG 画出节点和连线，不引入额外图库，避免增加依赖风险。
 //
 // 后续如果接 React Flow / Cytoscape，可以继续使用 KnowledgeGraphView 作为
@@ -45,7 +45,7 @@ export function KnowledgeGraphPanel({
   visuals = [],
 }: KnowledgeGraphPanelProps) {
   // 用户可以在“列表”和“图形”之间切换。
-  // 默认列表，因为它对 mock sender 联调最可靠：任何节点/边都能直接读出来。
+  // 默认列表，因为任何节点/边都能直接读出来。
   const [viewMode, setViewMode] = useState<GraphViewMode>("list");
 
   // nodeById 用于把后端边里的 source/target 节点 ID 转成可读 label。

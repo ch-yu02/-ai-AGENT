@@ -13,10 +13,24 @@ DEV_COMMAND="${1:-help}"
 load_env_file() {
   local env_file="$ROOT_DIR/.env"
   if [[ -f "$env_file" ]]; then
+    local name
+    local -a preserved_names=()
+    declare -A preserved_values=()
+    while IFS='=' read -r name _; do
+      if [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+        preserved_names+=("$name")
+        preserved_values["$name"]="${!name-}"
+      fi
+    done < <(env)
+
     set -a
     # shellcheck source=/dev/null
     source "$env_file"
     set +a
+
+    for name in "${preserved_names[@]}"; do
+      export "$name=${preserved_values[$name]}"
+    done
   fi
 }
 
@@ -33,7 +47,7 @@ normalize_proxy_env() {
 
 should_load_env_file() {
   case "$DEV_COMMAND" in
-    backend|frontend|dev|mock|audio-stream|whisperlive-server|whisperlive-md|whisperlive-mic|llm-smoke|rag-smoke|rebuild-global-index|build|install-rag)
+    backend|frontend|dev|app|mock|audio-stream|whisperlive-server|whisperlive-md|whisperlive-mic|llm-config|llm-smoke|rag-smoke|rebuild-global-index|build|install-rag)
       return 0
       ;;
     *)
@@ -51,6 +65,7 @@ BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
 BACKEND_PORT="${BACKEND_PORT:-8000}"
 FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
 FRONTEND_PORT="${FRONTEND_PORT:-5173}"
+FRONTEND_PREVIEW_PORT="${FRONTEND_PREVIEW_PORT:-4173}"
 
 PYTHON_BIN="$ROOT_DIR/.venv/bin/python"
 PIP_BIN="$ROOT_DIR/.venv/bin/pip"
@@ -67,6 +82,7 @@ Usage:
   scripts/dev.sh <command>
 
 Commands:
+  app              First-run configure LLM, then run backend + built frontend
   backend          Start FastAPI backend with reload
   frontend         Start Vite frontend dev server
   dev              Start backend and frontend together
@@ -77,6 +93,7 @@ Commands:
   build            Type-check and build frontend
   install-backend  Install backend Python dependencies
   install-rag      Install optional LlamaIndex/vector RAG dependencies
+  desktop-shortcut Install/update EDU-Mate desktop launcher shortcut
   install-whisperlive
                    Install lightweight WhisperLive deps into OpenVINO Python
   mock             Send mock events to an existing frontend-created session
@@ -85,6 +102,7 @@ Commands:
                    Start WhisperLive OpenVINO websocket server on iGPU
   whisperlive-md   Stream local audio to WhisperLive and periodically update Qwen notes
   whisperlive-mic  Stream ALSA microphone audio to WhisperLive and EDU-Mate
+  llm-config       Configure backend LLM provider into .env
   llm-smoke        Manually test configured LLM provider with fixed classroom data
   rag-smoke        Smoke-test configured RAG backend and vector fallback status
   rebuild-global-index
@@ -95,10 +113,19 @@ Environment:
   BACKEND_PORT     Backend port, default 8000
   FRONTEND_HOST    Frontend host, default 127.0.0.1
   FRONTEND_PORT    Frontend port, default 5173
+  FRONTEND_PREVIEW_PORT
+                   Built frontend preview port for app command, default 4173
+  APP_OPEN_BROWSER Open browser in app command, default 1
+  APP_BROWSER_DELAY_SECONDS
+                   Delay before opening browser in app command, default 2
   OPENVINO_ROOT    OpenVINO model/workspace root, default /home/edu-mate_user/openvino
   OPENVINO_PYTHON  Python with OpenVINO deps, default \$OPENVINO_ROOT/venv/bin/python
 
 Examples:
+  scripts/dev.sh app
+  scripts/dev.sh desktop-shortcut
+  scripts/dev.sh llm-config
+  scripts/dev.sh llm-config --print-templates
   scripts/dev.sh dev
   scripts/dev.sh test
   scripts/dev.sh mock --session-id lec_xxx --no-end
@@ -187,6 +214,66 @@ run_dev() {
   wait -n "$backend_pid" "$frontend_pid"
 }
 
+run_app() {
+  require_backend_venv
+  require_frontend_deps
+
+  cd "$ROOT_DIR"
+  "$PYTHON_BIN" -m backend.scripts.configure_llm_provider
+  load_env_file
+  normalize_proxy_env
+
+  if [[ ! -f "$ROOT_DIR/frontend/dist/index.html" || "${APP_REBUILD_FRONTEND:-0}" == "1" ]]; then
+    echo "Building frontend for app mode..."
+    run_build
+  fi
+
+  echo "Backend:  http://$BACKEND_HOST:$BACKEND_PORT"
+  echo "Frontend: http://$FRONTEND_HOST:$FRONTEND_PREVIEW_PORT"
+  echo "Press Ctrl+C to stop both servers."
+
+  cd "$ROOT_DIR"
+  "$UVICORN_BIN" backend.app.main:app \
+    --host "$BACKEND_HOST" \
+    --port "$BACKEND_PORT" &
+  backend_pid=$!
+
+  cd "$ROOT_DIR/frontend"
+  npm run preview -- --host "$FRONTEND_HOST" --port "$FRONTEND_PREVIEW_PORT" &
+  frontend_pid=$!
+
+  browser_pid=""
+  if [[ "${APP_OPEN_BROWSER:-1}" != "0" ]]; then
+    (
+      sleep "${APP_BROWSER_DELAY_SECONDS:-2}"
+      if command -v xdg-open >/dev/null 2>&1; then
+        xdg-open "$(app_browser_url)" >/dev/null 2>&1 || true
+      fi
+    ) &
+    browser_pid=$!
+  fi
+
+  cleanup() {
+    if [[ -n "$browser_pid" ]]; then
+      kill "$browser_pid" 2>/dev/null || true
+      wait "$browser_pid" 2>/dev/null || true
+    fi
+    kill "$backend_pid" "$frontend_pid" 2>/dev/null || true
+    wait "$backend_pid" "$frontend_pid" 2>/dev/null || true
+  }
+  trap cleanup EXIT INT TERM
+
+  wait -n "$backend_pid" "$frontend_pid"
+}
+
+app_browser_url() {
+  local host="$FRONTEND_HOST"
+  if [[ "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="127.0.0.1"
+  fi
+  printf 'http://%s:%s' "$host" "$FRONTEND_PREVIEW_PORT"
+}
+
 run_backend_test() {
   require_backend_venv
   cd "$ROOT_DIR"
@@ -249,6 +336,11 @@ run_install_rag() {
     "$PIP_BIN" install --index-url "$torch_index_url" torch
   fi
   "$PIP_BIN" install -r backend/requirements-rag.txt
+}
+
+run_desktop_shortcut() {
+  cd "$ROOT_DIR"
+  "$ROOT_DIR/scripts/install_desktop_shortcut.sh"
 }
 
 run_install_whisperlive() {
@@ -321,9 +413,18 @@ run_rebuild_global_index() {
   "$PYTHON_BIN" -m backend.scripts.rebuild_global_index "${@:2}"
 }
 
+run_llm_config() {
+  require_backend_venv
+  cd "$ROOT_DIR"
+  "$PYTHON_BIN" -m backend.scripts.configure_llm_provider "${@:2}"
+}
+
 command="$DEV_COMMAND"
 
 case "$command" in
+  app)
+    run_app
+    ;;
   backend)
     run_backend
     ;;
@@ -355,6 +456,9 @@ case "$command" in
   install-rag)
     run_install_rag
     ;;
+  desktop-shortcut)
+    run_desktop_shortcut
+    ;;
   install-whisperlive)
     run_install_whisperlive
     ;;
@@ -372,6 +476,9 @@ case "$command" in
     ;;
   whisperlive-mic)
     run_whisperlive_mic "$@"
+    ;;
+  llm-config)
+    run_llm_config "$@"
     ;;
   llm-smoke)
     run_llm_smoke

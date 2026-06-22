@@ -224,7 +224,7 @@ function applyWebSocketMessage(
     return applyEventReceivedMessage(state, message);
   }
 
-  // session.started 通常发生在前端连接 WebSocket 之前，当前 MVP 不依赖它。
+  // session.started 通常发生在前端连接 WebSocket 之前，当前页面不依赖它。
   return state;
 }
 
@@ -361,7 +361,7 @@ function applyEventReceivedMessage(
   }
 
   // 优先使用 ContextManager 标准化后的 timeline_item.data；如果缺失，则回退到
-  // 原始 payload。这样前端能兼容 mock sender 和后端默认补齐字段。
+  // 原始 payload。这样前端能兼容不同事件来源和后端默认补齐字段。
   const timelineData = readObject(contextUpdate?.timeline_item.data);
   const normalizedPayload =
     timelineData && Object.keys(timelineData).length > 0 ? timelineData : payload;

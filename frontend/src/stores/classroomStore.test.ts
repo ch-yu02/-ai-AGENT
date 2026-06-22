@@ -5,8 +5,8 @@ import type { WebSocketMessage } from "../types/classroom";
 
 // Store smoke tests.
 //
-// 这些测试不依赖浏览器、不连接真实后端，只验证 reducer 是否能正确消费
-// 后端 WebSocket 的 event.received 信封。真实联调时，WebSocket service
+// 这些用例不依赖浏览器、不连接真实后端，只验证 reducer 是否能正确消费
+// 后端 WebSocket 的 event.received 信封。真实运行时，WebSocket service
 // 只负责把 JSON 解析成 WebSocketMessage，然后 dispatch 给同一个 reducer。
 
 describe("classroomReducer", () => {
@@ -223,7 +223,7 @@ describe("classroomReducer", () => {
         ...initialDashboardState,
         session: {
           session_id: "lec_test",
-          title: "测试课堂",
+          title: "课堂记录",
           start_time: "2026-06-05T00:00:00+08:00",
           status: "recording",
           language: "zh-CN",
@@ -234,7 +234,7 @@ describe("classroomReducer", () => {
         type: "session.ended",
         session: {
           session_id: "lec_test",
-          title: "测试课堂",
+          title: "课堂记录",
           start_time: "2026-06-05T00:00:00+08:00",
           end_time: "2026-06-05T01:00:00+08:00",
           status: "ended",

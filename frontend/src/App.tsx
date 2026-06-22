@@ -506,7 +506,7 @@ function App() {
           <span className="brand-mark">EDU</span>
           <div>
             <h1>课堂实时看板</h1>
-            <p>Lecture-Link MVP</p>
+            <p>EDU-Mate</p>
           </div>
         </div>
         <ClassroomControls

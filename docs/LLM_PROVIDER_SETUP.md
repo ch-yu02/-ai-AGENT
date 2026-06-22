@@ -12,6 +12,16 @@ and, on final snapshots, can infer the classroom title and course.
 
 ## Shared Environment Variables
 
+First-time users can run the local configuration wizard:
+
+```bash
+scripts/dev.sh llm-config
+```
+
+The wizard writes the same backend-only variables to `.env`. Advanced users can
+still configure them directly in `.env` or export them before launching the
+app. Direct environment variables take precedence over `.env`.
+
 ```bash
 LLM_PROVIDER=deepseek
 LLM_API_KEY=replace_me
@@ -23,8 +33,18 @@ LLM_MAX_RETRIES=1
 
 Local development commands in `scripts/dev.sh` load `.env` automatically for
 backend, dev, audio/WhisperLive integration, LLM smoke, global-index rebuild,
-and build commands. Put local secrets in `.env`; keep `.env` ignored by Git and
-commit only `.env.example`.
+app, and build commands. Put local secrets in `.env`; keep `.env` ignored by
+Git and commit only `.env.example`.
+
+For a one-command local app-style run:
+
+```bash
+scripts/dev.sh app
+```
+
+`app` mode runs the first-run LLM check, builds the frontend if `frontend/dist`
+is missing, starts the backend without reload, and serves the built frontend on
+`FRONTEND_PREVIEW_PORT` (default `4173`).
 
 Knowledge extraction is LLM-only. If the provider is not configured, EDU-Mate
 will keep transcript/OCR/classroom saving working, but it will return an

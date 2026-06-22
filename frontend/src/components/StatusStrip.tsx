@@ -2,7 +2,7 @@ import type { LectureSession, WebSocketStatus } from "../types/classroom";
 
 // 页面顶部的状态摘要。
 // 它把跨模块状态放在一个容易扫读的位置：当前课堂、session_id、WS 状态、
-// 事件计数。后续 mock sender 联调时，session_id 是最常用的信息。
+// 事件计数。
 type StatusStripProps = {
   session: LectureSession | null;
   websocketStatus: WebSocketStatus;

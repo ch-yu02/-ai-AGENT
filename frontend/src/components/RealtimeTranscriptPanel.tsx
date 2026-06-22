@@ -62,7 +62,7 @@ export function RealtimeTranscriptPanel({
       ) : (
         <div className="scroll-list transcript-list" ref={listRef}>
           {transcript.map((segment) => (
-            // segment_id 由 ASR/mock sender 提供；缺省时后端 ContextManager 会补齐。
+            // segment_id 由 ASR 事件提供；缺省时后端 ContextManager 会补齐。
             <article
               className={`transcript-item ${
                 focusedSource?.type === "segment" && focusedSource.id === segment.segment_id

@@ -1,7 +1,7 @@
 // 前端 Agent API 类型。
 //
 // 字段名保持后端 Pydantic 模型的 snake_case，不在服务层做转换。这样
-// docs/API_SCHEMA.md、后端 schemas.py 和前端类型可以一一对照，减少联调歧义。
+// docs/API_SCHEMA.md、后端 schemas.py 和前端类型可以一一对照，减少接口歧义。
 
 export type AgentIntent = "auto" | "qa" | "summary" | "todos" | "quiz";
 // strict 只基于课堂资料；grounded 允许模型结合课堂来源做补充解释。

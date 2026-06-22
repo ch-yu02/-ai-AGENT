@@ -116,14 +116,14 @@ async function readErrorDetail(response: Response): Promise<string> {
 
 // 创建课堂 session。
 //
-// 前端 MVP 给一组默认字段，这样用户点击“开始课堂”即可联调，不需要先填表单。
+// 前端给一组默认字段，这样用户点击“开始课堂”即可进入课堂记录。
 // 调用成功后，后端会返回 LectureSession，并在内存中创建对应 context 和图谱。
 export function startSession(payload: StartSessionPayload = {}): Promise<LectureSession> {
   return requestJson<LectureSession>("/sessions/start", {
     method: "POST",
     body: JSON.stringify({
-      title: "前端联调课堂",
-      course: "EDU-Mate MVP",
+      title: "未命名课堂",
+      course: "EDU-Mate",
       language: "zh-CN",
       created_by: "student",
       ...payload,
@@ -131,8 +131,7 @@ export function startSession(payload: StartSessionPayload = {}): Promise<Lecture
   });
 }
 
-// 读取后端内存中仍在录制的课堂。用于本地脚本自动创建 session 后，
-// 前端无需手动复制 session_id 就能接入同一节测试课堂。
+// 读取后端内存中仍在录制的课堂。用于前端自动接入正在进行的课堂。
 export function listRecordingSessions(): Promise<LectureSession[]> {
   return requestJson<LectureSession[]>("/sessions/recording");
 }

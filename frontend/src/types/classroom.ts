@@ -1,7 +1,7 @@
 // 前端共享类型定义。
 //
 // 这里的字段尽量与 docs/API_SCHEMA.md 和后端 Pydantic model 保持一致。
-// 注意：后端 API 使用 snake_case，前端也保留 snake_case，减少联调时的
+// 注意：后端 API 使用 snake_case，前端也保留 snake_case，减少接口对接时的
 // 序列化/反序列化转换成本。
 
 // POST /sessions/start 和 /sessions/{id}/end 返回的课堂元信息。
@@ -117,7 +117,7 @@ export type SessionHistorySummary = {
   session: LectureSession;
   // 后端通过 timeline.json 长度计算，用来在列表里快速显示课堂内容量。
   event_count: number;
-  // 本地存储目录，主要用于联调和后续本地文件定位；UI 不依赖它拼文件路径。
+  // 本地存储目录，主要用于后续本地文件定位；UI 不依赖它拼文件路径。
   storage_path: string;
 };
 
