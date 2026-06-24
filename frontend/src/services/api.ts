@@ -4,6 +4,7 @@ import type {
   SessionDeleteResponse,
   SessionHistoryDetail,
   SessionHistoryListResponse,
+  TranscriptSegment,
 } from "../types/classroom";
 
 // 后端 API 基地址。
@@ -45,6 +46,11 @@ export type EventAcceptedResponse = {
   session_id: string;
   event_type: string;
   event_count: number;
+};
+
+export type TranscriptPreviewFinalizePayload = {
+  session_id: string;
+  payload: TranscriptSegment;
 };
 
 export type VisualAnalysisResponse = {
@@ -161,6 +167,19 @@ export async function endSession(
   } finally {
     window.clearTimeout(timeoutId);
   }
+}
+
+export function finalizeTranscriptPreview(
+  sessionId: string,
+  payload: TranscriptSegment,
+): Promise<EventAcceptedResponse> {
+  return requestJson<EventAcceptedResponse>("/events/transcript-preview/finalize", {
+    method: "POST",
+    body: JSON.stringify({
+      session_id: sessionId,
+      payload,
+    } satisfies TranscriptPreviewFinalizePayload),
+  });
 }
 
 // 更新课堂标题/课程名称。录制中的课堂会同步内存 session；已保存历史课堂会

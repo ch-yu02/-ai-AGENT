@@ -4,7 +4,7 @@
 适用对象：
 
 - ASR / 语音识别开发者
-- OCR / VLM / 图片理解开发者
+- 摄像头 / 图片理解 / 可选 OCR 开发者
 - 硬件采集与上传开发者
 - 前端联调开发者
 - 后端 Agent / RAG 开发者
@@ -16,8 +16,8 @@
 
 ```text
 contract_version: 0.1.0
-status: MVP integration contract
-last_updated: 2026-06-19
+status: current local integration contract
+last_updated: 2026-06-24
 ```
 
 当前外部模块只需要向后端发送两类实时输入：
@@ -56,7 +56,7 @@ POST /events
 POST /sessions/start
 ```
 
-前端拿到 `session_id` 后，再把它提供给 ASR、OCR/VLM 或 mock sender。
+前端拿到 `session_id` 后，再把它提供给 ASR、摄像头/视觉分析模块或 mock sender。
 
 其他模块发送事件时必须带同一个 `session_id`。
 
@@ -182,7 +182,7 @@ node_fourier_transform
 | event_type | 来源模块 | 用途 |
 | --- | --- | --- |
 | `transcript.segment` | ASR | 实时字幕、转写文本 |
-| `image.capture` | 摄像头 / OCR / VLM | 图片、OCR 文本、图像描述 |
+| `image.capture` | 摄像头 / 图片理解 / 可选 OCR | 图片、视觉文本、图像描述 |
 
 内部事件：
 
@@ -279,7 +279,25 @@ ClassroomContext.timeline
 每个字或每个 token 都发一次
 ```
 
-如果 ASR 有中间结果，可以发送：
+如果 ASR 有中间结果，不建议直接走 `/events` 写入历史；当前 WhisperLive
+麦克风链路使用独立 preview 通道：
+
+```text
+POST /events/transcript-preview
+```
+
+preview 只更新前端一条可替换的“正在识别”字幕，不写入 transcript、timeline、
+结构化笔记或知识图谱。用户点击结束课堂时，前端会把当前仍在显示且有文本的
+preview 通过以下接口提升为 final `transcript.segment`：
+
+```text
+POST /events/transcript-preview/finalize
+```
+
+这样最后一条已被用户看到的有效临时字幕会进入课堂记录。历史 preview 不会
+全部保存，避免写入大量不稳定的重复中间结果。
+
+外部 ASR 如果确实要发送非 final 片段，可以发送：
 
 ```json
 {
@@ -287,7 +305,7 @@ ClassroomContext.timeline
 }
 ```
 
-但当前前端 MVP 更适合消费 final segment。中间结果的覆盖更新策略后续再扩展。
+但稳定正式字幕仍应使用 `is_final=true` 的 `transcript.segment`。
 
 ### 4.6 curl 示例
 
@@ -311,12 +329,12 @@ curl -X POST http://127.0.0.1:8000/events \
   }'
 ```
 
-## 5. 图像/OCR/VLM 输入：image.capture
+## 5. 图像/视觉输入：image.capture
 
 ### 5.1 用途
 
 视觉模块在捕获到课堂画面、课件截图或白板图像后，发送一条
-`image.capture`。如果外部模块已经完成 OCR/VLM，也可以同时携带结果。
+`image.capture`。如果外部模块已经完成 OCR 或多模态分析，也可以同时携带结果。
 当前前端视觉区已经内置浏览器摄像头预览和拍照：点击拍照按钮或按 `Ctrl+1`
 会保存图片并触发后端云端多模态分析。
 
@@ -330,7 +348,7 @@ ClassroomContext.timeline
 前端会展示到：
 
 ```text
-图片 / OCR / VLM 面板
+图片 / 视觉分析面板
 内部 timeline 状态（当前主界面不再单独显示事件面板）
 ```
 
@@ -339,7 +357,7 @@ ClassroomContext.timeline
 后端支持两种图片传输方式：
 
 1. 推荐：先上传图片 bytes，再把返回的 `image_path` 放入 `image.capture`。
-2. 调试：只发送图片路径和 OCR/VLM 处理结果。
+2. 调试：只发送图片路径和 OCR/多模态处理结果。
 
 图片上传：
 
@@ -424,15 +442,15 @@ GET /sessions/{session_id}/images/{image_id}
 | `image_type` | string/null | 否 | `slide` / `whiteboard` / `experiment` / `note` / `unknown` | 内容类型 |
 | `status` | string | 否 | `processed` / `processing` / `failed` | 处理状态 |
 | `ocr_text` | string/null | 否 | 可为空 | OCR 提取文本 |
-| `caption` | string/null | 否 | 可为空 | VLM 图像描述 |
+| `caption` | string/null | 否 | 可为空 | 多模态模型图像描述 |
 | `visual_text` | string[] | 否 | 可为空 | 多模态模型从图片读到的关键文字/公式 |
 | `key_points` | string[] | 否 | 可为空 | 多模态模型总结出的视觉课堂要点 |
 
 ### 5.6 status 约定
 
 ```text
-processed  OCR/VLM 已完成，ocr_text 或 caption 可用
-processing 已捕获图片，但 OCR/VLM 仍在处理
+processed  OCR/多模态分析已完成，ocr_text、caption、visual_text 或 key_points 可用
+processing 已捕获图片，但 OCR/多模态分析仍在处理
 failed     图片处理失败
 ```
 
@@ -743,7 +761,7 @@ curl -X POST http://127.0.0.1:8000/events \
 1. 前端开始课堂，获得 session_id
 2. ASR 发送 transcript.segment(seg_001)
 3. ASR 发送 transcript.segment(seg_002)
-4. OCR/VLM 发送 image.capture(img_001)
+4. 摄像头/视觉模块发送 image.capture(img_001)
 5. EDU-Mate 内部知识抽取模块根据 seg_001/seg_002/img_001 生成 knowledge.extraction(ext_001)
 6. KnowledgeGraphManager 根据内部 knowledge.extraction 更新知识图谱
 7. 重复 2-6
@@ -762,8 +780,8 @@ curl -X POST http://127.0.0.1:8000/events \
 ]
 ```
 
-知识抽取可以滞后于 ASR/OCR，但这是 EDU-Mate 后端内部流程。外部模块只需
-保证 ASR/OCR 输入携带稳定 ID 和时间戳。
+知识抽取可以滞后于 ASR/视觉输入，但这是 EDU-Mate 后端内部流程。外部模块只需
+保证 ASR/视觉输入携带稳定 ID 和时间戳。
 
 如果使用当前 WhisperLive/Qwen 笔记链路，还会额外出现：
 
@@ -789,11 +807,16 @@ scripts/dev.sh whisperlive-mic --enable-cloud-graph
 
 `whisperlive-mic` 参考桌面采集项目的 ALSA/ffmpeg 方案自动选择 USB 麦克风，
 但输出仍然是标准 `transcript.segment`，不会新增后端事件类型。
+默认语言为 `auto`。如果测试音频是明确的中文或英文课堂，可以用
+`--language zh` 或 `--language en` 固定语言，降低 Whisper 在噪声环境下的
+误判概率。
 
 为降低前端体感延迟，`whisperlive-mic` 还会把 WhisperLive partial 字幕发送到
 `POST /events/transcript-preview`。这是 WebSocket 预览通道，只更新前端底部
-“正在识别”临时字幕，不会写入 `ClassroomContext.transcript`、timeline、
-`structured_notes.md`、知识图谱或历史文件。外部 ASR 正式输入仍然只应使用
+“正在识别”临时字幕，不会在课堂进行中写入 `ClassroomContext.transcript`、
+timeline、`structured_notes.md`、知识图谱或历史文件。结束课堂前，前端会
+把当前可见的最后一条有效 preview 调用 `/events/transcript-preview/finalize`
+补写为 final `transcript.segment`。外部 ASR 正式输入仍然只应使用
 `transcript.segment`。
 
 ## 8. 硬件组对接约定
@@ -944,7 +967,7 @@ ImageCaptureEvent
 KnowledgeExtractionEvent
 ```
 
-但在 MVP 联调阶段先保持灵活，降低算法组和硬件组接入成本。
+但在当前联调阶段先保持灵活，降低算法组和硬件组接入成本。
 
 ## 11. 联调检查清单
 
@@ -956,12 +979,12 @@ ASR 组：
 - [ ] `start_ts` / `end_ts` 是课堂相对秒数
 - [ ] 前端字幕区可看到内容
 
-OCR/VLM 组：
+摄像头/视觉分析组：
 
 - [ ] 发送 `image.capture`
 - [ ] `image_path` 可追踪
-- [ ] `ocr_text` 或 `caption` 至少有一个有用字段
-- [ ] 前端图片/OCR 区可看到内容
+- [ ] `caption`、`visual_text`、`key_points` 或 `ocr_text` 至少有一个有用字段
+- [ ] 前端图片/视觉分析区可看到内容
 
 EDU-Mate 知识抽取模块：
 
@@ -985,7 +1008,7 @@ EDU-Mate 知识抽取模块：
 - [ ] 前端可创建课堂，也可接入已有 recording 课堂
 - [ ] 页面显示 `session_id`
 - [ ] WebSocket 已连接
-- [ ] 能展示 ASR、OCR/VLM 和内部知识抽取产生的图谱更新
+- [ ] 能展示 ASR、图片视觉分析和内部知识抽取产生的图谱更新
 - [ ] 结束课堂后仍保留展示结果，并能展示“课后产物生成中/已生成/失败”
 
 ## 12. 最小端到端样例
@@ -1014,7 +1037,7 @@ curl -X POST http://127.0.0.1:8000/events \
   }'
 ```
 
-3. 发送 OCR/VLM：
+3. 发送图片/视觉事件：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/events \

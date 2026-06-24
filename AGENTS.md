@@ -9,8 +9,9 @@ EDU-Mate is a local classroom Agent system:
 
 - FastAPI backend manages classroom sessions, realtime events, WebSocket
   updates, local history, Agent APIs, RAG, and knowledge graph updates.
-- React/Vite frontend shows realtime subtitles, images/OCR, knowledge graph,
-  post-class artifacts, classroom Agent, global search, and history.
+- React/Vite frontend shows realtime subtitles, classroom images and multimodal
+  analysis, knowledge graph, post-class artifacts, classroom Agent, global
+  search, and history.
 - WhisperLive can produce streaming ASR drafts.
 - Local Qwen turns WhisperLive subtitle drafts into periodically refreshed
   `structured_notes.md`; it no longer rewrites the realtime subtitle stream.
@@ -22,7 +23,7 @@ EDU-Mate is a local classroom Agent system:
 
 ## Capability Boundaries
 
-External ASR/OCR/hardware modules normally send only:
+External ASR/camera/hardware modules normally send only:
 
 ```text
 transcript.segment
@@ -31,7 +32,7 @@ image.capture
 
 `knowledge.extraction` is an EDU-Mate internal event. It may come from:
 
-- internal LLM-backed extraction after ASR/OCR batches,
+- internal LLM-backed extraction after ASR/image batches,
 - notes-agent extraction from Qwen Markdown notes,
 - mock/debug scripts.
 
@@ -59,8 +60,12 @@ POST /events/transcript-preview
 -> one replaceable frontend "正在识别" subtitle row
 ```
 
-Preview subtitles are never written to transcript, timeline, notes, graph, or
-history; completed/final subtitles still use `transcript.segment`.
+Preview subtitles are not written to transcript, timeline, notes, graph, or
+history while the lesson is live; completed/final subtitles still use
+`transcript.segment`. When the user clicks "结束课堂", the frontend first
+finalizes the currently visible useful preview via
+`POST /events/transcript-preview/finalize`, so the last accepted partial is not
+lost in `transcript.md`.
 
 WhisperLive/Qwen notes:
 
@@ -88,13 +93,18 @@ Frontend camera preview + capture button / Ctrl+1
 
 External camera or screenshot modules can still use the same image upload and
 `image.capture` event contract. OCR is optional; the built-in classroom camera
-path sends the saved image directly to a multimodal cloud LLM.
+path sends the saved image directly to a multimodal cloud LLM. Failed image
+analysis is written back as `status=failed`; the recording frontend retries
+with `force=true` and the backend can extend timeout based on prior failures.
 
 History and Agent:
 
 ```text
 POST /sessions/{session_id}/end
+-> frontend finalizes the current preview subtitle if one is visible
 -> data/sessions/{session_id}/...
+-> session.ended returns quickly with post_class_status=generating
+-> background summary/todos/final extraction/index work
 -> POST /agent/chat
 -> POST /agent/search
 -> POST /agent/review
@@ -112,6 +122,8 @@ scripts/dev.sh help
 Frequent commands:
 
 ```bash
+scripts/dev.sh app
+scripts/dev.sh desktop-shortcut
 scripts/dev.sh dev
 scripts/dev.sh test
 scripts/dev.sh backend-test
@@ -209,6 +221,7 @@ data/sessions/{session_id}/quiz.json
 data/sessions/{session_id}/agent_messages.json
 data/sessions/{session_id}/agent_artifacts.json
 data/sessions/{session_id}/llama_index/
+data/sessions/{session_id}/images/
 ```
 
 Global search/index artifacts:
@@ -243,16 +256,17 @@ http://127.0.0.1:5173
 scripts/dev.sh mock --session-id REPLACE_WITH_SESSION_ID --no-end
 # or
 scripts/dev.sh whisperlive-md --enable-cloud-graph --max-audio-seconds 300
+# or, in app mode, speak into the configured microphone after starting class
 ```
 
-5. Verify subtitles, visual/OCR, graph updates, structured notes, Agent QA, and
-   saved history.
+5. Verify subtitles, classroom images/analysis, graph updates, structured
+   notes, Agent QA, post-class artifacts, and saved history.
 
 ## Documentation Map
 
 - `AGENTS.md`: compact project guide.
 - `Tasks.md`: active roadmap and checklist.
 - `docs/API_SCHEMA.md`: HTTP/WebSocket/Agent API schema.
-- `docs/INPUT_DATA_CONTRACT.md`: ASR/OCR/hardware input contract.
-- `docs/LLM_PROVIDER_SETUP.md`: DeepSeek/OpenAI/local provider setup.
-- `docs/AGENT_DEVELOPMENT_PLAN.md`: archived pointer to `Tasks.md`.
+- `docs/INPUT_DATA_CONTRACT.md`: ASR/camera/hardware input contract.
+- `docs/LLM_PROVIDER_SETUP.md`: Kimi/DeepSeek/OpenAI/local provider setup.
+- `docs/PACKAGING_PLAN.md`: app launcher, desktop shortcut, and packaging plan.

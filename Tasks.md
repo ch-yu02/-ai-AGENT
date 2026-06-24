@@ -6,7 +6,7 @@
 
 - [x] FastAPI backend and React/Vite frontend.
 - [x] Session lifecycle, realtime events, WebSocket updates, local history.
-- [x] Transcript, visual/OCR, knowledge graph, post-class artifacts, Agent, and
+- [x] Transcript, classroom image/visual analysis, knowledge graph, post-class artifacts, Agent, and
   global search panels.
 - [x] History list/detail/delete.
 - [x] Agent chat: QA / summary / todos / quiz.
@@ -21,6 +21,8 @@
   existing transcript/notes/graph workflow.
 - [x] WhisperLive microphone partials can show as frontend-only preview subtitles;
   only final subtitles are persisted.
+- [x] Ending a classroom finalizes the currently visible useful preview subtitle
+  before saving, so the last accepted partial is not lost.
 - [x] Local Qwen generates structured classroom notes without rewriting realtime subtitles.
 - [x] Cloud notes-agent can infer final classroom title/course from notes.
 - [x] Notes-agent endpoint for Markdown-driven graph updates.
@@ -36,8 +38,12 @@
 - [x] Browser camera preview and photo capture, with button and Ctrl+1 shortcut.
 - [x] Cloud multimodal image analysis writes visual text/key points into the
   existing visual panel, knowledge graph, and RAG source flow.
+- [x] Failed classroom image analysis is written back as `status=failed`, shown
+  to the user, and retried automatically while the class is still recording.
 - [x] Knowledge graph graph-view supports pan/zoom/fullscreen, complete multiline labels,
   and relationship-cluster layout.
+- [x] App mode can launch backend, built frontend preview, WhisperLive server,
+  and microphone capture from one command or desktop shortcut.
 
 ## P0: Integration Reliability
 
@@ -52,12 +58,14 @@
   target board.
 - [ ] Decide whether hardware camera capture should call the same image upload +
   visual analysis endpoint or provide its own capture service wrapper.
+- [ ] Validate end-session preview finalization on long microphone sessions with
+  noisy partial ASR.
 
 ## P1: Agent And Knowledge Quality
 
 - [ ] Add deeper evaluation for notes-agent graph deduplication and hierarchy stability.
 - [ ] Add fixtures for long 6-8 minute classroom graph growth.
-- [ ] Tune RAG ranking across structured notes, graph nodes, visual/OCR, and subtitles.
+- [ ] Tune RAG ranking across structured notes, graph nodes, visual sources, and subtitles.
 - [ ] Support clicking Agent/review source refs to focus subtitle/image/graph node.
 - [ ] Add frontend tests for URL deep link and focused source behavior.
 - [ ] Add clearer UI display for LLM warnings and graph update failures.

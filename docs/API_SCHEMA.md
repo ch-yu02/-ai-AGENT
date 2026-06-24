@@ -1,12 +1,12 @@
 # EDU-Mate API Schema
 
-本文档描述当前后端 MVP 的接口契约，供前端、算法模块、硬件采集模块和
+本文档描述当前后端接口契约，供前端、算法模块、硬件采集模块和
 mock sender 联调使用。
 
 当前后端职责：
 
 1. 创建课堂 session。
-2. 接收外部实时输入：字幕、图片/OCR/VLM。
+2. 接收外部实时输入：字幕、图片和可选 OCR/多模态分析结果。
 3. 在 EDU-Mate 内部生成知识抽取结果。
 4. 更新课堂上下文和知识图谱。
 5. 通过 WebSocket 推送增量更新。
@@ -576,6 +576,79 @@ knowledge.extraction
 | `404` | session、context 或 knowledge graph 不存在 |
 | `409` | session 已结束，不再接收实时事件 |
 
+### POST /events/transcript-preview
+
+接收 ASR 的临时识别结果，只通过 WebSocket 推送给前端展示为一条可替换的
+“正在识别”字幕。该接口不写入 `ClassroomContext.transcript`、timeline、
+结构化笔记、知识图谱或历史文件。
+
+请求体：
+
+```json
+{
+  "session_id": "lec_20260624_102315_ba9b09e3",
+  "payload": {
+    "segment_id": "seg_partial_001",
+    "start_ts": 12.0,
+    "end_ts": 14.0,
+    "text": "临时识别中的字幕",
+    "speaker": "teacher",
+    "is_final": false,
+    "source": "whisperlive_openvino"
+  }
+}
+```
+
+响应状态码：`202 Accepted`
+
+响应体：
+
+```json
+{
+  "status": "accepted",
+  "session_id": "lec_20260624_102315_ba9b09e3",
+  "event_type": "transcript.preview",
+  "event_count": 3
+}
+```
+
+广播消息类型：`transcript.preview`
+
+### POST /events/transcript-preview/finalize
+
+把当前前端仍在显示的最后一条有效 preview 提升为正式
+`transcript.segment`。前端在调用 `POST /sessions/{session_id}/end` 前使用
+该接口，避免结束课堂时丢失已经展示给用户但尚未等到 WhisperLive final 的
+字幕。
+
+请求体与 preview 相同：
+
+```json
+{
+  "session_id": "lec_20260624_102315_ba9b09e3",
+  "payload": {
+    "segment_id": "seg_partial_001",
+    "start_ts": 12.0,
+    "end_ts": 14.0,
+    "text": "临时识别中的字幕",
+    "speaker": "teacher",
+    "is_final": false,
+    "source": "whisperlive_openvino"
+  }
+}
+```
+
+后端会强制写入：
+
+- `is_final=true`
+- `session_id` 与外层一致
+- 缺失 `segment_id` 时按时间戳生成 `seg_preview_final_*`
+- `skip_realtime_extraction=true`，避免结束瞬间触发额外实时抽取
+
+响应和 WebSocket 广播与普通 `transcript.segment` 一致，因此它会进入
+`transcript.md`、timeline 和课后上下文。该接口只补写当前最后一条 preview，
+不会保存所有历史 preview，避免写入大量重复的中间识别结果。
+
 ## 6. 事件 Payload
 
 ### 6.1 transcript.segment
@@ -619,7 +692,7 @@ payload 字段：
 
 ### 6.2 image.capture
 
-摄像头、屏幕截图、OCR 或 VLM 模块发送的视觉事件。当前前端已经内置
+摄像头、屏幕截图、OCR 或多模态分析模块发送的视觉事件。当前前端已经内置
 浏览器摄像头预览和拍照入口：点击视觉区的“拍照”按钮或按 `Ctrl+1` 会上传
 图片、发送 `status=processing` 的 `image.capture`，随后调用云端多模态分析。
 
@@ -658,7 +731,7 @@ payload 字段：
 | `image_type` | string/null | 否 | 图片类型，例如 `slide`、`whiteboard` |
 | `status` | string | 否 | 处理状态，默认 `processed` |
 | `ocr_text` | string/null | 否 | OCR 文本 |
-| `caption` | string/null | 否 | VLM 图片描述 |
+| `caption` | string/null | 否 | 多模态模型图片描述 |
 | `visual_text` | string[] | 否 | 多模态模型直接读到的关键文字/公式片段 |
 | `key_points` | string[] | 否 | 多模态模型总结出的课堂视觉要点 |
 
@@ -693,13 +766,13 @@ GET /sessions/{session_id}/images/{image_id}
 
 当前图像处理链路：
 
-1. 相机/硬件/OCR/VLM 模块可先上传原始图片 bytes，得到受控的 `local://`
+1. 相机/硬件/视觉分析模块可先上传原始图片 bytes，得到受控的 `local://`
    `image_path`。
 2. 模块发送 `image.capture`，至少携带 `image_path` 和 `capture_ts`。内置
    浏览器拍照会先发送 `status=processing`；外部模块也可以直接携带
    `ocr_text`、`caption`、`visual_text` 或 `key_points`。
 3. 后端把视觉事件写入 `ClassroomContext.visuals` 和 timeline，并通过
-   WebSocket 推给前端视觉/OCR 区。
+   WebSocket 推给前端图片/视觉分析区。
 4. 若需要跳过 OCR 并直接让云端多模态模型读图，调用
    `POST /agent/visual/analyze`。成功后后端会更新同一个 `image.capture`，
    并把图片中的知识点作为 `knowledge.extraction` 推送给图谱。
@@ -1129,6 +1202,7 @@ data/sessions/{session_id}/todos.json
 data/sessions/{session_id}/quiz.json
 data/sessions/{session_id}/agent_messages.json
 data/sessions/{session_id}/agent_artifacts.json
+data/sessions/{session_id}/images/
 ```
 
 文件说明：
@@ -1145,10 +1219,11 @@ data/sessions/{session_id}/agent_artifacts.json
 | `quiz.json` | 用户主动通过 Agent 生成自测题后保存 |
 | `agent_messages.json` | 历史 Agent 对话 |
 | `agent_artifacts.json` | Agent 生成的结构化产物快照 |
+| `images/` | 前端或硬件摄像头上传的课堂图片 |
 
 ## 10. Mock Sender
 
-mock sender 用于在真实 ASR/OCR/VLM 和内部知识抽取模块未完全接入时，
+mock sender 用于在真实 ASR、摄像头/视觉分析和内部知识抽取模块未完全接入时，
 自动向后端喂一组中文课堂模拟数据。它不会创建课堂；课堂开始必须先从
 前端页面手动发起。
 
@@ -1186,7 +1261,7 @@ mock sender 当前会模拟：
 
 1. 使用已有课堂 session。
 2. 发送多条 `transcript.segment`。
-3. 发送 `image.capture`，包含 OCR 文本和 VLM 描述。
+3. 发送 `image.capture`，包含可选 OCR 文本和多模态描述。
 4. 发送多条模拟的内部 `knowledge.extraction`，驱动知识图谱增量更新。
 5. 默认结束课堂并保存本地文件；加 `--no-end` 时保留 recording 状态。
 
@@ -1254,7 +1329,8 @@ scripts/dev.sh whisperlive-mic --enable-cloud-graph
 指定设备或只测试 ASR 字幕：
 
 ```bash
-scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language '<|zh|>'
+scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language zh
+scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language en
 scripts/dev.sh whisperlive-mic --no-qwen-notes --max-audio-seconds 60
 ```
 
@@ -1267,12 +1343,16 @@ scripts/dev.sh whisperlive-mic --no-qwen-notes --max-audio-seconds 60
 3. WhisperLive 返回 completed 字幕后，脚本发送标准
    `transcript.segment` 到 `/events`。
 4. WhisperLive partial 字幕会通过 `POST /events/transcript-preview` 广播给
-   前端作为一条可替换的“正在识别”临时字幕；该通道不写入 transcript、
-   timeline、笔记、知识图谱或历史文件。
-5. 默认会自动接入最新 recording 课堂；没有可用课堂时会创建本地测试课堂。
-6. 未传 `--no-qwen-notes` 时，仍会定期维护
+   前端作为一条可替换的“正在识别”临时字幕；该通道在课堂进行中不写入
+   transcript、timeline、笔记、知识图谱或历史文件。点击结束课堂时，前端会
+   把当前可见的最后一条有效 preview 调用
+   `POST /events/transcript-preview/finalize` 补写为 final 字幕。
+5. 默认语言为 `auto`；中文/英文课可以分别显式传 `--language zh` 或
+   `--language en`，避免混合环境误判。
+6. 默认会自动接入最新 recording 课堂；没有可用课堂时会创建本地测试课堂。
+7. 未传 `--no-qwen-notes` 时，仍会定期维护
    `data/sessions/{session_id}/structured_notes.md`。
-7. 传 `--enable-cloud-graph` 时，结构化笔记继续上传给 notes-agent 更新图谱。
+8. 传 `--enable-cloud-graph` 时，结构化笔记继续上传给 notes-agent 更新图谱。
 
 调低体感字幕延迟时可先调整：
 
@@ -1294,10 +1374,13 @@ scripts/dev.sh whisperlive-mic \
    - 把 `context_update.timeline_item` 写入本地状态；当前主界面不再单独显示事件面板，
      但 timeline 仍用于历史保存和后续定位。
    - 如果 `event_type` 是 `transcript.segment`，更新字幕区。
-   - 如果 `event_type` 是 `image.capture`，更新图片/OCR 区。
+   - 如果 `event_type` 是 `image.capture`，更新图片/视觉分析区。
    - 如果 `graph_patch` 不为 `null`，应用知识图谱增量更新。
-5. 调用 `POST /sessions/{session_id}/end` 结束课堂。
-6. 收到 `session.ended` 后停止实时写入，展示保存路径或进入课后页面。
+5. 如果当前还有正在显示的 `transcript.preview`，先调用
+   `POST /events/transcript-preview/finalize` 补写最后一条有效临时字幕。
+6. 调用 `POST /sessions/{session_id}/end` 结束课堂。
+7. 收到 `session.ended` 后停止实时写入，展示保存路径或进入课后页面。
+8. 收到 `post_class.updated` 后刷新 summary/todos/RAG 状态和最终图谱信息。
 
 注意：当前 WebSocket 连接后不会补发历史快照。因此前端应在创建课堂后尽快
 连接 WebSocket，再开始发送或接收实时事件。

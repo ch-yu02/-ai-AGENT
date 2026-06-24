@@ -17,6 +17,14 @@ Implemented:
   runs `scripts/launch_desktop_app.sh`.
 - The desktop launcher starts app mode in a terminal and opens the browser to
   the local frontend automatically.
+- App mode now starts the microphone stack by default:
+  `WhisperLive server` plus `whisperlive-mic --wait-for-session
+  --no-create-session`. The microphone waits for the frontend "start classroom"
+  action before it posts transcript events, so the frontend remains the only
+  source of classroom lifecycle intent.
+- When the frontend ends a classroom, app-mode microphone capture stops writing
+  to that ended session and re-arms itself for the next frontend-created
+  classroom.
 - `.env` remains supported for direct/manual configuration and takes precedence
   through exported environment variables.
 - Provider templates are available for Kimi/Moonshot, DeepSeek, OpenAI,
@@ -28,12 +36,14 @@ This phase is still a developer-friendly local runner, not a packaged binary.
 
 Planned:
 
-- Add a desktop launcher that starts the backend and frontend server processes.
-- Open the app window directly instead of requiring the user to open a browser.
-- Surface startup, API configuration, camera, microphone, and background task
-  status in the UI.
-- Keep `.env` loading for advanced users while allowing the first-run wizard to
-  write local configuration.
+- Replace the terminal-based desktop shortcut with a small desktop shell or
+  native window that embeds the local frontend.
+- Surface startup, API configuration, camera, microphone, WhisperLive, and
+  background task status in the UI.
+- Provide a first-run/reconfigure screen for provider templates while keeping
+  `.env` loading for advanced users.
+- Keep frontend start/end classroom actions as the only user-facing lifecycle
+  source; microphone capture continues to wait for those actions.
 
 ## Phase 3: Runtime Supervision
 
@@ -41,6 +51,8 @@ Planned:
 
 - Add process supervision for backend, frontend, WhisperLive, and microphone
   capture.
+- Surface microphone/WhisperLive child-process failures in the frontend instead
+  of only printing them in the launcher terminal.
 - Add a small local status endpoint for readiness checks.
 - Persist user-facing logs for startup failures, model/API failures, and device
   permission issues.

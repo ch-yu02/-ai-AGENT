@@ -206,6 +206,37 @@ class RealtimeKnowledgeExtractionTest(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(preview_messages[0]["data"]["payload"]["is_final"])
 
+    async def test_finalize_transcript_preview_persists_last_partial(self) -> None:
+        """Ending flow can promote the last visible preview into transcript history."""
+        response = await events_api.finalize_transcript_preview(
+            events_api.TranscriptPreviewFinalizeRequest(
+                session_id=self.session_id,
+                payload={
+                    "segment_id": "seg_partial_001",
+                    "start_ts": 12.0,
+                    "end_ts": 14.0,
+                    "text": "unfinished but useful preview",
+                    "speaker": "teacher",
+                    "is_final": False,
+                    "source": "whisperlive_openvino",
+                },
+            )
+        )
+
+        context = context_manager.get_context(self.session_id)
+        event_messages = [
+            payload
+            for payload in self.socket.sent_payloads
+            if payload["type"] == "event.received"
+        ]
+
+        self.assertEqual(response.event_type, "transcript.segment")
+        self.assertEqual(len(context.transcript), 1)
+        self.assertEqual(context.transcript[0].text, "unfinished but useful preview")
+        self.assertTrue(context.transcript[0].is_final)
+        self.assertEqual(context.timeline[0].type, "transcript")
+        self.assertEqual(event_messages[-1]["data"]["event_type"], "transcript.segment")
+
 
 if __name__ == "__main__":
     unittest.main()

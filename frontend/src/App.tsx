@@ -14,6 +14,7 @@ import {
   ApiError,
   deleteHistorySession,
   endSession,
+  finalizeTranscriptPreview,
   getHistorySession,
   listRecordingSessions,
   listHistorySessions,
@@ -324,6 +325,16 @@ function App() {
     setStatusMessage(null);
 
     try {
+      if (state.partialTranscript?.text.trim()) {
+        try {
+          await finalizeTranscriptPreview(
+            state.session.session_id,
+            state.partialTranscript,
+          );
+        } catch (error) {
+          console.warn("Finalize transcript preview failed before ending session", error);
+        }
+      }
       const session = await endSession(state.session.session_id);
       dispatch({
         type: "session.ended",

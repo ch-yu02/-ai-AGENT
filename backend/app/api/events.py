@@ -185,6 +185,13 @@ class TranscriptPreviewRequest(BaseModel):
     payload: dict[str, Any]
 
 
+class TranscriptPreviewFinalizeRequest(BaseModel):
+    """Promote the latest frontend-visible ASR preview into a final segment."""
+
+    session_id: str
+    payload: dict[str, Any]
+
+
 @router.post(
     "/transcript-preview",
     response_model=EventAcceptedResponse,
@@ -244,6 +251,49 @@ async def receive_transcript_preview(
         event_type="transcript.preview",
         event_count=event_count,
     )
+
+
+@router.post(
+    "/transcript-preview/finalize",
+    response_model=EventAcceptedResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def finalize_transcript_preview(
+    request: TranscriptPreviewFinalizeRequest,
+) -> EventAcceptedResponse:
+    """Persist the last ASR preview before ending a classroom.
+
+    Preview subtitles are intentionally non-persistent while a lesson is live.
+    When the user ends a class, the frontend may still be displaying one useful
+    partial subtitle that has not arrived as WhisperLive final output yet. This
+    endpoint promotes that preview to a normal ``transcript.segment`` so it is
+    included in ``transcript.md`` and downstream notes/graph context.
+    """
+    try:
+        session_manager.require_recording(request.session_id)
+    except SessionNotFoundError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    except SessionConflictError:
+        raise HTTPException(status_code=409, detail="Session is not recording")
+
+    payload = {
+        **request.payload,
+        "session_id": request.session_id,
+        "is_final": True,
+        "source": request.payload.get("source") or "whisperlive_preview_finalized",
+        "skip_realtime_extraction": True,
+    }
+    if not str(payload.get("segment_id") or "").strip():
+        start_ms = int(round(float(payload.get("start_ts", 0.0)) * 1000))
+        end_ms = int(round(float(payload.get("end_ts", 0.0)) * 1000))
+        payload["segment_id"] = f"seg_preview_final_{start_ms}_{end_ms}"
+
+    event = RealtimeEvent(
+        session_id=request.session_id,
+        event_type="transcript.segment",
+        payload=payload,
+    )
+    return await receive_event(event)
 
 
 def _run_realtime_knowledge_extraction(event: RealtimeEvent) -> ExtractionResult | None:

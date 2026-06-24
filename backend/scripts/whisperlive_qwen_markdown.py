@@ -67,6 +67,21 @@ DEFAULT_OUTPUT_DIR = Path("data/whisperlive_markdown")
 DEFAULT_SESSIONS_DIR = Path("data/sessions")
 DEFAULT_MARKDOWN_TITLE = "WhisperLive 本地课堂笔记"
 ENGLISH_MARKDOWN_TITLE = "WhisperLive Local Classroom Notes"
+DEFAULT_WHISPER_LANGUAGE = "auto"
+ASR_HALLUCINATION_PHRASES = (
+    "谢谢观看",
+    "感谢观看",
+    "感谢您的观看",
+    "字幕由",
+    "amara.org",
+    "thanks for watching",
+    "thank you for watching",
+    "please subscribe",
+    "subscribe to",
+)
+ASR_MERGE_MAX_GAP_SECONDS = 0.9
+ASR_MERGE_MAX_DURATION_SECONDS = 12.0
+ASR_MERGE_MAX_WORDS = 45
 
 
 @dataclass(frozen=True)
@@ -171,6 +186,7 @@ class BackendSyncer:
         post_transcript: bool,
         enable_cloud_graph: bool,
         graph_update_every_seconds: float,
+        should_post: Callable[[], bool] | None = None,
     ) -> None:
         self.base_url = base_url
         self.session_id = session_id
@@ -178,6 +194,7 @@ class BackendSyncer:
         self.post_transcript = post_transcript
         self.enable_cloud_graph = enable_cloud_graph
         self.graph_update_every_seconds = graph_update_every_seconds
+        self._should_post = should_post or (lambda: True)
         self._transcript_queue: queue.Queue[BackendSyncTask | None] = queue.Queue()
         self._notes_queue: queue.Queue[BackendSyncTask | None] = queue.Queue()
         self._transcript_thread: threading.Thread | None = None
@@ -233,7 +250,12 @@ class BackendSyncer:
 
     def enqueue_transcript(self, segment: WhisperLiveSegment) -> None:
         """Queue a final transcript segment for ``POST /events``."""
-        if not self.enabled or not self.post_transcript or not segment.completed:
+        if (
+            not self.enabled
+            or not self.post_transcript
+            or not segment.completed
+            or not self._should_post()
+        ):
             return
         payload = transcript_payload(segment)
         segment_id = str(payload["segment_id"])
@@ -253,6 +275,8 @@ class BackendSyncer:
     ) -> None:
         """Queue one Markdown notes snapshot for cloud graph extraction."""
         if not self.enabled or not self.enable_cloud_graph:
+            return
+        if update_status != "final" and not self._should_post():
             return
         markdown_hash = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
         if markdown_hash in self._posted_markdown_hashes:
@@ -312,8 +336,12 @@ class BackendSyncer:
                 if task is None:
                     return
                 if task.kind == "transcript":
+                    if not self._should_post():
+                        continue
                     self._post_transcript(task.payload)
                 elif task.kind == "notes":
+                    if task.payload.get("update_status") != "final" and not self._should_post():
+                        continue
                     self._post_notes(task.payload)
             except Exception as exc:  # noqa: BLE001
                 log(f"Backend sync {worker_name} failed: {exc}")
@@ -452,7 +480,7 @@ class WhisperLiveFileClient:
         host: str,
         port: int,
         model: str,
-        language: str,
+        language: str | None,
         use_vad: bool,
         send_last_n_segments: int,
         no_speech_thresh: float,
@@ -472,7 +500,7 @@ class WhisperLiveFileClient:
         self.url = f"ws://{host}:{port}"
         self.uid = str(uuid.uuid4())
         self.model = model
-        self.language = language
+        self.language = normalize_whisper_language(language)
         self.use_vad = use_vad
         self.send_last_n_segments = send_last_n_segments
         self.no_speech_thresh = no_speech_thresh
@@ -482,6 +510,7 @@ class WhisperLiveFileClient:
         self.segments: list[WhisperLiveSegment] = []
         self._segments_lock = threading.Lock()
         self._seen_completed: set[tuple[str, str, str]] = set()
+        self._pending_completed: WhisperLiveSegment | None = None
         self._receiver_error: Exception | None = None
         self._receiver_stop = threading.Event()
         self.on_completed_segment = on_completed_segment
@@ -541,7 +570,7 @@ class WhisperLiveFileClient:
                     "clip_audio": False,
                     "same_output_threshold": self.same_output_threshold,
                     "enable_translation": False,
-                    "target_language": "zh",
+                    "target_language": None,
                     "hotwords": None,
                     "enable_diarization": False,
                     "max_speakers": 1,
@@ -571,7 +600,7 @@ class WhisperLiveFileClient:
                 self._remember_segment(segment)
 
     def _remember_segment(self, segment: WhisperLiveSegment) -> None:
-        completed_to_notify: WhisperLiveSegment | None = None
+        completed_to_notify: list[WhisperLiveSegment] = []
         partial_to_notify: WhisperLiveSegment | None = None
         with self._segments_lock:
             if segment.completed:
@@ -579,8 +608,7 @@ class WhisperLiveFileClient:
                 if key in self._seen_completed:
                     return
                 self._seen_completed.add(key)
-                self.segments.append(segment)
-                completed_to_notify = segment
+                completed_to_notify = self._remember_completed_segment_locked(segment)
             elif not self.segments or self.segments[-1].completed:
                 self.segments.append(segment)
                 partial_to_notify = segment
@@ -588,10 +616,64 @@ class WhisperLiveFileClient:
                 self.segments[-1] = segment
                 partial_to_notify = segment
 
-        if completed_to_notify is not None and self.on_completed_segment is not None:
-            self.on_completed_segment(completed_to_notify)
+        if self.on_completed_segment is not None:
+            for completed_segment in completed_to_notify:
+                self.on_completed_segment(completed_segment)
         if partial_to_notify is not None and self.on_partial_segment is not None:
             self.on_partial_segment(partial_to_notify)
+
+    def _remember_completed_segment_locked(
+        self,
+        segment: WhisperLiveSegment,
+    ) -> list[WhisperLiveSegment]:
+        """Store one completed segment, merging tiny adjacent final fragments."""
+        to_notify: list[WhisperLiveSegment] = []
+
+        if self._pending_completed is not None and should_merge_asr_segments(
+            self._pending_completed,
+            segment,
+        ):
+            merged = merge_asr_segments(self._pending_completed, segment)
+            self._replace_pending_completed_locked(merged)
+            self._pending_completed = merged
+            if should_flush_completed_segment(merged):
+                to_notify.extend(self._flush_pending_completed_locked())
+            return to_notify
+
+        to_notify.extend(self._flush_pending_completed_locked())
+        self.segments.append(segment)
+        self._pending_completed = segment
+        if should_flush_completed_segment(segment):
+            to_notify.extend(self._flush_pending_completed_locked())
+        return to_notify
+
+    def _replace_pending_completed_locked(self, merged: WhisperLiveSegment) -> None:
+        """Replace the pending completed segment in the collected segment list."""
+        pending = self._pending_completed
+        if pending is None:
+            self.segments.append(merged)
+            return
+        for index in range(len(self.segments) - 1, -1, -1):
+            if self.segments[index] == pending:
+                self.segments[index] = merged
+                return
+        self.segments.append(merged)
+
+    def _flush_pending_completed_locked(self) -> list[WhisperLiveSegment]:
+        """Return the pending completed segment and mark it ready for callback."""
+        if self._pending_completed is None:
+            return []
+        pending = self._pending_completed
+        self._pending_completed = None
+        return [pending]
+
+    def _flush_pending_completed(self) -> None:
+        """Flush a final segment that was delayed while waiting for possible merge."""
+        with self._segments_lock:
+            pending_segments = self._flush_pending_completed_locked()
+        if self.on_completed_segment is not None:
+            for segment in pending_segments:
+                self.on_completed_segment(segment)
 
     def _wait_for_ready(self) -> None:
         deadline = time.time() + self.connect_timeout
@@ -617,6 +699,7 @@ class WhisperLiveFileClient:
                 break
 
     def _final_segments(self) -> list[WhisperLiveSegment]:
+        self._flush_pending_completed()
         return self.snapshot_segments(completed_only=False)
 
     def snapshot_segments(self, *, completed_only: bool = True) -> list[WhisperLiveSegment]:
@@ -638,7 +721,7 @@ def parse_whisperlive_segments(message: dict[str, Any]) -> list[WhisperLiveSegme
         if not isinstance(item, dict):
             continue
         text = str(item.get("text") or "").strip()
-        if not text:
+        if not is_useful_asr_text(text):
             continue
         try:
             start = float(item.get("start", 0.0))
@@ -655,6 +738,129 @@ def parse_whisperlive_segments(message: dict[str, Any]) -> list[WhisperLiveSegme
             )
         )
     return segments
+
+
+def normalize_whisper_language(language: str | None) -> str | None:
+    """Normalize CLI/app language values for WhisperLive.
+
+    WhisperLive's websocket protocol accepts ``None`` to let the backend detect
+    language when the selected backend supports it. Users can still force a
+    language with values like ``zh``, ``en``, ``<|zh|>`` or ``zh-CN``.
+    """
+    if language is None:
+        return None
+    normalized = language.strip()
+    if not normalized:
+        return None
+    lowered = normalized.lower()
+    if lowered in {"auto", "detect", "none", "null"}:
+        return None
+    token_match = re.fullmatch(r"<\|([a-z]{2,3})\|>", lowered)
+    if token_match:
+        return token_match.group(1)
+    if lowered.startswith("zh"):
+        return "zh"
+    if lowered.startswith("en"):
+        return "en"
+    return lowered
+
+
+def is_useful_asr_text(text: str) -> bool:
+    """Filter empty/noisy Whisper hallucinations before they reach the app."""
+    stripped = text.strip()
+    if not stripped:
+        return False
+    compact = re.sub(r"\s+", " ", stripped).strip()
+    lowered = compact.lower()
+    if any(phrase in lowered for phrase in ASR_HALLUCINATION_PHRASES):
+        return False
+
+    content_chars = re.findall(r"[\w\u4e00-\u9fff]", compact, flags=re.UNICODE)
+    if len(content_chars) < 2:
+        return False
+    if _dominant_character_ratio(content_chars) >= 0.8 and len(content_chars) >= 6:
+        return False
+    return True
+
+
+def _dominant_character_ratio(chars: list[str]) -> float:
+    if not chars:
+        return 1.0
+    counts: dict[str, int] = {}
+    for char in chars:
+        counts[char.lower()] = counts.get(char.lower(), 0) + 1
+    return max(counts.values()) / len(chars)
+
+
+def should_merge_asr_segments(left: WhisperLiveSegment, right: WhisperLiveSegment) -> bool:
+    """Return whether two adjacent completed ASR fragments should be one sentence."""
+    if not left.completed or not right.completed:
+        return False
+    if right.start < left.start:
+        return False
+    gap = right.start - left.end
+    if gap > ASR_MERGE_MAX_GAP_SECONDS:
+        return False
+    combined_duration = max(left.end, right.end) - min(left.start, right.start)
+    if combined_duration > ASR_MERGE_MAX_DURATION_SECONDS:
+        return False
+
+    left_words = asr_word_count(left.text)
+    right_words = asr_word_count(right.text)
+    if left_words + right_words > ASR_MERGE_MAX_WORDS:
+        return False
+
+    if ends_with_sentence_terminal(left.text) and left_words >= 3:
+        return False
+    if right_words <= 4 and left_words > 8 and gap > 0.35:
+        return False
+    return (
+        left_words <= 4
+        or right_words <= 4
+        or not ends_with_sentence_terminal(left.text)
+    )
+
+
+def merge_asr_segments(left: WhisperLiveSegment, right: WhisperLiveSegment) -> WhisperLiveSegment:
+    """Merge two adjacent completed ASR fragments into one transcript segment."""
+    return WhisperLiveSegment(
+        start=min(left.start, right.start),
+        end=max(left.end, right.end),
+        text=join_asr_text(left.text, right.text),
+        completed=True,
+    )
+
+
+def join_asr_text(left: str, right: str) -> str:
+    """Join adjacent ASR text while preserving natural spacing around punctuation."""
+    left_text = left.strip()
+    right_text = right.strip()
+    if not left_text:
+        return right_text
+    if not right_text:
+        return left_text
+    if re.match(r"^[,.;:!?，。！？；：]", right_text):
+        return f"{left_text}{right_text}"
+    return f"{left_text} {right_text}"
+
+
+def should_flush_completed_segment(segment: WhisperLiveSegment) -> bool:
+    """Return true when a final segment is unlikely to need the next fragment."""
+    words = asr_word_count(segment.text)
+    duration = max(0.0, segment.end - segment.start)
+    if ends_with_sentence_terminal(segment.text) and (words >= 3 or duration >= 0.8):
+        return True
+    return duration >= ASR_MERGE_MAX_DURATION_SECONDS or words >= ASR_MERGE_MAX_WORDS
+
+
+def ends_with_sentence_terminal(text: str) -> bool:
+    return bool(re.search(r"[.!?。！？]['\")\]}»”’]*\s*$", text.strip()))
+
+
+def asr_word_count(text: str) -> int:
+    latin_words = re.findall(r"[A-Za-z0-9]+(?:[-'][A-Za-z0-9]+)*", text)
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", text)
+    return len(latin_words) + len(cjk_chars)
 
 
 def overlap_seconds(left: WhisperLiveSegment, right: WhisperLiveSegment) -> float:
@@ -707,7 +913,27 @@ def normalize_collected_segments(
                 completed=segment.completed,
             )
         )
-    return sorted(clean, key=lambda item: (item.start, item.end, item.completed))
+    return coalesce_completed_asr_segments(
+        sorted(clean, key=lambda item: (item.start, item.end, item.completed))
+    )
+
+
+def coalesce_completed_asr_segments(
+    segments: list[WhisperLiveSegment],
+) -> list[WhisperLiveSegment]:
+    """Merge adjacent completed fragments in a normalized segment list."""
+    coalesced: list[WhisperLiveSegment] = []
+    for segment in segments:
+        if (
+            coalesced
+            and coalesced[-1].completed
+            and segment.completed
+            and should_merge_asr_segments(coalesced[-1], segment)
+        ):
+            coalesced[-1] = merge_asr_segments(coalesced[-1], segment)
+        else:
+            coalesced.append(segment)
+    return coalesced
 
 
 class QwenMarkdownPolisher:
@@ -1319,7 +1545,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--whisperlive-model", default=DEFAULT_WHISPERLIVE_MODEL)
-    parser.add_argument("--language", default="<|zh|>")
+    parser.add_argument("--language", default=DEFAULT_WHISPER_LANGUAGE)
     parser.add_argument("--max-audio-seconds", type=float, default=120.0)
     parser.add_argument("--packet-seconds", type=float, default=0.25)
     parser.add_argument("--fast-send", action="store_true", help="Send audio faster than realtime.")

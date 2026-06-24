@@ -118,11 +118,28 @@ Environment:
   APP_OPEN_BROWSER Open browser in app command, default 1
   APP_BROWSER_DELAY_SECONDS
                    Delay before opening browser in app command, default 2
+  APP_ENABLE_MIC   Start WhisperLive + microphone capture in app command, default 1
+  APP_MIC_AUDIO_DEVICE
+                   ALSA input device for app mic capture, default auto
+  APP_MIC_LANGUAGE
+                   Whisper language: auto, zh, en, etc.; default auto
+  APP_MIC_NO_SPEECH_THRESH
+                   Lower value filters silence/noise more aggressively, default 0.30
+  APP_MIC_SAME_OUTPUT_THRESHOLD
+                   Higher value makes final subtitles more stable, default 8
+  APP_ENABLE_QWEN_NOTES
+                   Keep structured_notes.md from microphone ASR, default 1
+  APP_ENABLE_CLOUD_GRAPH
+                   Send notes snapshots to cloud graph agent, default 1
+  APP_MIC_LOOP_SESSIONS
+                   Re-arm microphone after a classroom ends, default 1
   OPENVINO_ROOT    OpenVINO model/workspace root, default /home/edu-mate_user/openvino
   OPENVINO_PYTHON  Python with OpenVINO deps, default \$OPENVINO_ROOT/venv/bin/python
 
 Examples:
   scripts/dev.sh app
+  APP_ENABLE_MIC=0 scripts/dev.sh app
+  APP_MIC_AUDIO_DEVICE=plughw:1,0 scripts/dev.sh app
   scripts/dev.sh desktop-shortcut
   scripts/dev.sh llm-config
   scripts/dev.sh llm-config --print-templates
@@ -139,7 +156,7 @@ Examples:
   scripts/dev.sh whisperlive-md --domain-terms "线性代数,矩阵,特征值" --max-audio-seconds 60 --update-every-seconds 20
   scripts/dev.sh whisperlive-md --whisperlive-model OpenVINO/whisper-medium-fp16-ov --max-audio-seconds 60 --fast-send
   scripts/dev.sh whisperlive-mic --enable-cloud-graph
-  scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language '<|zh|>' --no-qwen-notes
+  scripts/dev.sh whisperlive-mic --audio-device plughw:1,0 --language zh --no-qwen-notes
   scripts/dev.sh whisperlive-mic --partial-preview-interval 0.5 --same-output-threshold 2
   BACKEND_HOST=0.0.0.0 FRONTEND_HOST=0.0.0.0 scripts/dev.sh dev
 EOF
@@ -242,6 +259,10 @@ run_app() {
   npm run preview -- --host "$FRONTEND_HOST" --port "$FRONTEND_PREVIEW_PORT" &
   frontend_pid=$!
 
+  whisperlive_pid=""
+  microphone_pid=""
+  start_app_microphone_stack
+
   browser_pid=""
   if [[ "${APP_OPEN_BROWSER:-1}" != "0" ]]; then
     (
@@ -259,11 +280,126 @@ run_app() {
       wait "$browser_pid" 2>/dev/null || true
     fi
     kill "$backend_pid" "$frontend_pid" 2>/dev/null || true
+    if [[ -n "$microphone_pid" ]]; then
+      kill "$microphone_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$whisperlive_pid" ]]; then
+      kill "$whisperlive_pid" 2>/dev/null || true
+    fi
     wait "$backend_pid" "$frontend_pid" 2>/dev/null || true
+    if [[ -n "$microphone_pid" ]]; then
+      wait "$microphone_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$whisperlive_pid" ]]; then
+      wait "$whisperlive_pid" 2>/dev/null || true
+    fi
   }
   trap cleanup EXIT INT TERM
 
   wait -n "$backend_pid" "$frontend_pid"
+}
+
+start_app_microphone_stack() {
+  if [[ "${APP_ENABLE_MIC:-1}" == "0" ]]; then
+    echo "Microphone stack: disabled by APP_ENABLE_MIC=0"
+    return 0
+  fi
+  if [[ ! -x "$OPENVINO_PYTHON" ]]; then
+    echo "Microphone stack: skipped because OpenVINO Python is missing: $OPENVINO_PYTHON" >&2
+    return 0
+  fi
+
+  local whisperlive_host="${APP_WHISPERLIVE_HOST:-127.0.0.1}"
+  local whisperlive_connect_host="${APP_WHISPERLIVE_CONNECT_HOST:-127.0.0.1}"
+  local whisperlive_port="${APP_WHISPERLIVE_PORT:-9090}"
+  local audio_device="${APP_MIC_AUDIO_DEVICE:-auto}"
+  local language="${APP_MIC_LANGUAGE:-auto}"
+  local no_speech_thresh="${APP_MIC_NO_SPEECH_THRESH:-0.30}"
+  local same_output_threshold="${APP_MIC_SAME_OUTPUT_THRESHOLD:-8}"
+  local backend_url="${APP_MIC_BACKEND_URL:-$(app_backend_url)}"
+
+  echo "WhisperLive: http://$whisperlive_connect_host:$whisperlive_port"
+  echo "Microphone: device=$audio_device, language=$language"
+  echo "ASR stability: no_speech_thresh=$no_speech_thresh, same_output_threshold=$same_output_threshold"
+  echo "Microphone waits for the frontend to start a classroom session."
+
+  local server_args=(
+    backend/scripts/whisperlive_server.py
+    --host "$whisperlive_host"
+    --port "$whisperlive_port"
+  )
+  if [[ "${APP_WHISPERLIVE_ALLOW_CPU_FALLBACK:-0}" != "0" ]]; then
+    server_args+=(--allow-cpu-fallback)
+  fi
+
+  cd "$ROOT_DIR"
+  "$OPENVINO_PYTHON" "${server_args[@]}" &
+  whisperlive_pid=$!
+
+  if ! wait_for_tcp_port "$whisperlive_connect_host" "$whisperlive_port" "${APP_WHISPERLIVE_READY_TIMEOUT:-90}"; then
+    echo "Microphone stack: WhisperLive did not become ready; microphone capture skipped." >&2
+    return 0
+  fi
+
+  local mic_args=(
+    backend/scripts/whisperlive_microphone.py
+    --server "$whisperlive_connect_host"
+    --port "$whisperlive_port"
+    --backend-url "$backend_url"
+    --session-id auto
+    --wait-for-session
+    --no-create-session
+    --stop-when-session-ended
+    --audio-device "$audio_device"
+    --language "$language"
+    --no-speech-thresh "$no_speech_thresh"
+    --same-output-threshold "$same_output_threshold"
+  )
+  if [[ "${APP_ENABLE_QWEN_NOTES:-1}" == "0" ]]; then
+    mic_args+=(--no-qwen-notes)
+  fi
+  if [[ "${APP_ENABLE_CLOUD_GRAPH:-1}" != "0" ]]; then
+    mic_args+=(--enable-cloud-graph)
+  fi
+  if [[ -n "${APP_MIC_MAX_AUDIO_SECONDS:-}" ]]; then
+    mic_args+=(--max-audio-seconds "$APP_MIC_MAX_AUDIO_SECONDS")
+  fi
+  if [[ -n "${APP_MIC_PARTIAL_PREVIEW_INTERVAL:-}" ]]; then
+    mic_args+=(--partial-preview-interval "$APP_MIC_PARTIAL_PREVIEW_INTERVAL")
+  fi
+  (
+    mic_child_pid=""
+    trap 'if [[ -n "$mic_child_pid" ]]; then kill "$mic_child_pid" 2>/dev/null || true; wait "$mic_child_pid" 2>/dev/null || true; fi; exit 0' INT TERM
+    while true; do
+      "$OPENVINO_PYTHON" "${mic_args[@]}" &
+      mic_child_pid=$!
+      wait "$mic_child_pid"
+      mic_status=$?
+      mic_child_pid=""
+      if [[ "${APP_MIC_LOOP_SESSIONS:-1}" == "0" || "$mic_status" -ne 0 ]]; then
+        exit "$mic_status"
+      fi
+      echo "Microphone session finished; waiting for the next frontend classroom..."
+      sleep 1
+    done
+  ) &
+  microphone_pid=$!
+}
+
+wait_for_tcp_port() {
+  local host="$1"
+  local port="$2"
+  local timeout_seconds="$3"
+  local deadline=$((SECONDS + timeout_seconds))
+  while (( SECONDS < deadline )); do
+    if "$PYTHON_BIN" -c \
+      'import socket, sys; s=socket.socket(); s.settimeout(0.5); s.connect((sys.argv[1], int(sys.argv[2]))); s.close()' \
+      "$host" "$port" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
 }
 
 app_browser_url() {
@@ -272,6 +408,14 @@ app_browser_url() {
     host="127.0.0.1"
   fi
   printf 'http://%s:%s' "$host" "$FRONTEND_PREVIEW_PORT"
+}
+
+app_backend_url() {
+  local host="$BACKEND_HOST"
+  if [[ "$host" == "0.0.0.0" || "$host" == "::" ]]; then
+    host="127.0.0.1"
+  fi
+  printf 'http://%s:%s' "$host" "$BACKEND_PORT"
 }
 
 run_backend_test() {

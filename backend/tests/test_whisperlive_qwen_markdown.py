@@ -11,10 +11,12 @@ from backend.scripts.whisperlive_qwen_markdown import (
     build_markdown_prompt,
     enforce_markdown_grounding,
     fallback_markdown_result,
+    is_useful_asr_text,
     make_markdown_output_path,
     is_subsumed_partial,
     normalize_collected_segments,
     normalize_markdown_result,
+    normalize_whisper_language,
     parse_domain_terms,
     parse_whisperlive_segments,
     render_markdown,
@@ -54,6 +56,7 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
                     },
                     {"start": "bad", "end": None, "text": "频域", "completed": False},
                     {"text": ""},
+                    {"text": "谢谢观看", "completed": True},
                     "not-a-segment",
                 ]
             }
@@ -66,6 +69,21 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         self.assertTrue(segments[0].completed)
         self.assertEqual(segments[1].start, 0.0)
         self.assertFalse(segments[1].completed)
+
+    def test_whisper_language_normalization_supports_auto_and_tokens(self) -> None:
+        self.assertIsNone(normalize_whisper_language("auto"))
+        self.assertIsNone(normalize_whisper_language(""))
+        self.assertEqual(normalize_whisper_language("<|zh|>"), "zh")
+        self.assertEqual(normalize_whisper_language("zh-CN"), "zh")
+        self.assertEqual(normalize_whisper_language("EN"), "en")
+
+    def test_asr_text_filter_removes_common_silence_hallucinations(self) -> None:
+        self.assertFalse(is_useful_asr_text("谢谢观看"))
+        self.assertFalse(is_useful_asr_text("字幕由 Amara.org 社区提供"))
+        self.assertFalse(is_useful_asr_text("......"))
+        self.assertFalse(is_useful_asr_text("啊啊啊啊啊啊"))
+        self.assertTrue(is_useful_asr_text("Fourier transform maps signals."))
+        self.assertTrue(is_useful_asr_text("今天讲网络分层模型"))
 
     def test_subsumed_partial_detects_completed_overlap(self) -> None:
         completed = [WhisperLiveSegment(0.0, 5.0, "完整句子", True)]
@@ -94,6 +112,77 @@ class WhisperLiveQwenMarkdownTest(unittest.TestCase):
         )
 
         self.assertEqual([segment.text for segment in segments], ["完整"])
+
+    def test_normalize_collected_segments_merges_short_completed_fragments(self) -> None:
+        segments = normalize_collected_segments(
+            [
+                WhisperLiveSegment(47.94, 48.38, "This is a", True),
+                WhisperLiveSegment(48.38, 48.88, "semaphore", True),
+                WhisperLiveSegment(48.88, 49.34, "relay", True),
+                WhisperLiveSegment(49.34, 50.22, "note that", True),
+                WhisperLiveSegment(50.22, 50.64, "was used", True),
+                WhisperLiveSegment(50.64, 51.58, "to relay", True),
+                WhisperLiveSegment(51.58, 52.52, "encrypted", True),
+                WhisperLiveSegment(52.52, 54.14, "messages", True),
+                WhisperLiveSegment(54.14, 54.98, "from", True),
+                WhisperLiveSegment(54.98, 55.48, "source", True),
+                WhisperLiveSegment(55.48, 56.02, "and", True),
+                WhisperLiveSegment(56.02, 56.64, "destination.", True),
+            ],
+            completed_only=True,
+        )
+
+        self.assertEqual(len(segments), 1)
+        self.assertEqual(
+            segments[0].text,
+            "This is a semaphore relay note that was used to relay encrypted "
+            "messages from source and destination.",
+        )
+        self.assertEqual(segments[0].start, 47.94)
+        self.assertEqual(segments[0].end, 56.64)
+
+    def test_normalize_collected_segments_does_not_merge_complete_sentences(self) -> None:
+        segments = normalize_collected_segments(
+            [
+                WhisperLiveSegment(
+                    0.0,
+                    5.0,
+                    "Now, of course, it's about principles and tactics.",
+                    True,
+                ),
+                WhisperLiveSegment(
+                    5.0,
+                    8.54,
+                    "And in the history overview, you'll see that some principles",
+                    True,
+                ),
+            ],
+            completed_only=True,
+        )
+
+        self.assertEqual(len(segments), 2)
+
+    def test_normalize_collected_segments_keeps_new_sentence_after_terminal(self) -> None:
+        segments = normalize_collected_segments(
+            [
+                WhisperLiveSegment(
+                    42.22,
+                    47.18,
+                    "And here's an even older picture of another network.",
+                    True,
+                ),
+                WhisperLiveSegment(47.94, 48.38, "This is a", True),
+                WhisperLiveSegment(48.38, 48.88, "semaphore", True),
+                WhisperLiveSegment(48.88, 49.34, "relay.", True),
+            ],
+            completed_only=True,
+        )
+
+        self.assertEqual(len(segments), 2)
+        self.assertEqual(
+            segments[1].text,
+            "This is a semaphore relay.",
+        )
 
     def test_domain_terms_are_parsed_and_added_to_prompt(self) -> None:
         terms = parse_domain_terms("线性代数，薛定谔方程; 傅里叶变换")

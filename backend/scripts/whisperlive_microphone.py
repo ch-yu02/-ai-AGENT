@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 if str(ROOT_DIR) not in sys.path:
@@ -36,12 +36,14 @@ if str(ROOT_DIR) not in sys.path:
 from backend.scripts.local_audio_stream_sender import (  # noqa: E402
     DEFAULT_QWEN_MODEL,
     SAMPLE_RATE,
+    get_json,
     post_json,
     resolve_backend_session_id,
 )
 from backend.scripts.whisperlive_qwen_markdown import (  # noqa: E402
     DEFAULT_OUTPUT_DIR,
     DEFAULT_SESSIONS_DIR,
+    DEFAULT_WHISPER_LANGUAGE,
     DEFAULT_WHISPERLIVE_HOST,
     DEFAULT_WHISPERLIVE_MODEL,
     DEFAULT_WHISPERLIVE_PORT,
@@ -110,6 +112,110 @@ def discover_audio_device() -> str:
     except (OSError, subprocess.TimeoutExpired):
         return "default"
     return choose_audio_device(parse_arecord_devices(result.stdout))
+
+
+def resolve_or_wait_backend_session_id(
+    *,
+    requested_session_id: str,
+    base_url: str,
+    request_timeout: float,
+    create_if_missing: bool,
+    wait_for_session: bool,
+    poll_interval: float,
+    wait_timeout: float,
+) -> str:
+    """Resolve a recording session, optionally waiting for the frontend to start it."""
+    started_at = time.monotonic()
+    last_notice_at = 0.0
+    while True:
+        try:
+            return resolve_backend_session_id(
+                requested_session_id=requested_session_id,
+                base_url=base_url,
+                timeout=request_timeout,
+                create_if_missing=create_if_missing,
+            )
+        except Exception as exc:  # noqa: BLE001 - CLI should keep waiting on transient backend/session misses.
+            if not wait_for_session:
+                raise
+
+            elapsed = time.monotonic() - started_at
+            if wait_timeout > 0 and elapsed >= wait_timeout:
+                raise RuntimeError(
+                    "Timed out waiting for a frontend-created recording session."
+                ) from exc
+
+            now = time.monotonic()
+            if now - last_notice_at >= 5.0:
+                log(
+                    "Waiting for a frontend-created recording session before "
+                    f"starting microphone capture: {exc}"
+                )
+                last_notice_at = now
+            time.sleep(max(0.2, poll_interval))
+
+
+class RecordingSessionMonitor:
+    """Poll backend session status and stop live capture when classroom ends."""
+
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        session_id: str,
+        http_timeout: float,
+        poll_interval: float,
+        stop_event: threading.Event,
+        enabled: bool,
+    ) -> None:
+        self.base_url = base_url
+        self.session_id = session_id
+        self.http_timeout = http_timeout
+        self.poll_interval = max(0.5, poll_interval)
+        self.stop_event = stop_event
+        self.enabled = bool(enabled and session_id)
+        self._recording = True
+        self._thread: threading.Thread | None = None
+        self._last_warning = ""
+
+    def start(self) -> None:
+        if not self.enabled or self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        self._thread.join(timeout=3.0)
+        self._thread = None
+
+    def is_recording(self) -> bool:
+        return bool(self._recording and not self.stop_event.is_set())
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                payload = get_json(
+                    self.base_url,
+                    f"/sessions/{self.session_id}",
+                    timeout=self.http_timeout,
+                )
+                status = str(payload.get("status") or "").strip()
+                if status and status != "recording":
+                    self._recording = False
+                    log(
+                        "Recording session ended; stopping microphone capture "
+                        f"for session={self.session_id} status={status}"
+                    )
+                    self.stop_event.set()
+                    return
+            except Exception as exc:  # noqa: BLE001 - transient backend outages should not stop capture.
+                warning = str(exc)
+                if warning != self._last_warning:
+                    log(f"Recording session status check failed: {warning}")
+                    self._last_warning = warning
+            time.sleep(self.poll_interval)
 
 
 def ffmpeg_microphone_command(
@@ -296,11 +402,13 @@ class TranscriptPreviewSyncer:
         enabled: bool,
         min_interval_seconds: float,
         min_chars: int,
+        should_post: Callable[[], bool] | None = None,
     ) -> None:
         self.base_url = base_url
         self.session_id = session_id
         self.http_timeout = http_timeout
         self.enabled = bool(enabled and session_id)
+        self._should_post = should_post or (lambda: True)
         self.min_interval_seconds = max(0.0, min_interval_seconds)
         self.min_chars = max(1, min_chars)
         self._queue: queue.Queue[WhisperLiveSegment | None] = queue.Queue(maxsize=1)
@@ -330,7 +438,7 @@ class TranscriptPreviewSyncer:
 
     def enqueue(self, segment: WhisperLiveSegment) -> None:
         """Queue the latest useful partial segment, replacing stale previews."""
-        if not self.enabled or segment.completed:
+        if not self.enabled or segment.completed or not self._should_post():
             return
         text = segment.text.strip()
         if len(text) < self.min_chars:
@@ -361,9 +469,15 @@ class TranscriptPreviewSyncer:
             try:
                 if segment is None:
                     return
+                if not self._should_post():
+                    continue
                 self._post_preview(segment)
             except Exception as exc:  # noqa: BLE001
-                log(f"Backend sync transcript preview failed: {exc}")
+                if "Session is not recording" in str(exc):
+                    self.enabled = False
+                    log("Transcript preview sync stopped: session is not recording.")
+                else:
+                    log(f"Backend sync transcript preview failed: {exc}")
             finally:
                 self._queue.task_done()
 
@@ -401,11 +515,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tail-wait", type=float, default=8.0)
     parser.add_argument("--connect-timeout", type=float, default=300.0)
     parser.add_argument("--whisperlive-model", default=DEFAULT_WHISPERLIVE_MODEL)
-    parser.add_argument("--language", default="<|zh|>")
+    parser.add_argument("--language", default=DEFAULT_WHISPER_LANGUAGE)
     parser.add_argument("--no-vad", action="store_true")
     parser.add_argument("--send-last-n-segments", type=int, default=12)
-    parser.add_argument("--no-speech-thresh", type=float, default=0.45)
-    parser.add_argument("--same-output-threshold", type=int, default=6)
+    parser.add_argument("--no-speech-thresh", type=float, default=0.3)
+    parser.add_argument("--same-output-threshold", type=int, default=8)
     parser.add_argument("--backend-url", default=os.getenv("BACKEND_URL", "http://127.0.0.1:8000"))
     parser.add_argument(
         "--session-id",
@@ -414,6 +528,39 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
             "Existing recording session_id, or auto to attach to/create the newest "
             "recording session."
         ),
+    )
+    parser.add_argument(
+        "--no-create-session",
+        action="store_true",
+        help="Do not create a backend test session when no recording session exists.",
+    )
+    parser.add_argument(
+        "--wait-for-session",
+        action="store_true",
+        help="Wait until the frontend starts a recording session before capturing audio.",
+    )
+    parser.add_argument(
+        "--session-poll-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between recording-session checks when --wait-for-session is used.",
+    )
+    parser.add_argument(
+        "--session-wait-timeout",
+        type=float,
+        default=0.0,
+        help="Maximum seconds to wait for a session. Use 0 to wait forever.",
+    )
+    parser.add_argument(
+        "--stop-when-session-ended",
+        action="store_true",
+        help="Stop the current microphone capture when the bound session is no longer recording.",
+    )
+    parser.add_argument(
+        "--session-status-interval",
+        type=float,
+        default=2.0,
+        help="Seconds between session status checks when --stop-when-session-ended is used.",
     )
     parser.add_argument(
         "--no-post-transcript",
@@ -478,11 +625,26 @@ def main(argv: list[str] | None = None) -> int:
     sync_enabled = post_transcript or bool(args.enable_cloud_graph)
     session_id = args.session_id.strip()
     if sync_enabled:
-        session_id = resolve_backend_session_id(
+        session_id = resolve_or_wait_backend_session_id(
             requested_session_id=session_id or "auto",
             base_url=args.backend_url,
-            timeout=args.http_timeout,
+            request_timeout=args.http_timeout,
+            create_if_missing=not args.no_create_session,
+            wait_for_session=bool(args.wait_for_session),
+            poll_interval=args.session_poll_interval,
+            wait_timeout=args.session_wait_timeout,
         )
+
+    stop_event = threading.Event()
+    session_monitor = RecordingSessionMonitor(
+        base_url=args.backend_url,
+        session_id=session_id,
+        http_timeout=args.http_timeout,
+        poll_interval=args.session_status_interval,
+        stop_event=stop_event,
+        enabled=bool(sync_enabled and args.stop_when_session_ended),
+    )
+    session_monitor.start()
 
     syncer = BackendSyncer(
         base_url=args.backend_url,
@@ -491,6 +653,7 @@ def main(argv: list[str] | None = None) -> int:
         post_transcript=post_transcript,
         enable_cloud_graph=bool(args.enable_cloud_graph and not args.no_qwen_notes),
         graph_update_every_seconds=args.graph_update_every_seconds,
+        should_post=session_monitor.is_recording,
     )
     syncer.start()
     if syncer.enabled:
@@ -506,6 +669,7 @@ def main(argv: list[str] | None = None) -> int:
         enabled=bool(post_transcript and not args.no_preview_partials),
         min_interval_seconds=args.partial_preview_interval,
         min_chars=args.partial_min_chars,
+        should_post=session_monitor.is_recording,
     )
     preview_syncer.start()
     if preview_syncer.enabled:
@@ -559,7 +723,6 @@ def main(argv: list[str] | None = None) -> int:
     else:
         log("Qwen Markdown notes disabled for this microphone run.")
 
-    stop_event = threading.Event()
     segments: list[WhisperLiveSegment] = []
     try:
         segments = client.transcribe_microphone(
@@ -576,12 +739,14 @@ def main(argv: list[str] | None = None) -> int:
         stop_event.set()
         segments = client.snapshot_segments(completed_only=True)
     except Exception:
+        session_monitor.stop()
         if updater is not None:
             updater.stop()
         preview_syncer.stop()
         syncer.stop()
         raise
 
+    session_monitor.stop()
     if updater is not None:
         final_output_path = updater.stop_and_flush(segments)
         if final_output_path:
